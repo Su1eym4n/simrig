@@ -43,5 +43,5 @@ Playground should skip cleanly when those extras are missing.
 ## Scope notes
 
 - v0.1 first-class path: existing MuJoCo Playground environments.
-- Custom envs: `new-env` + `validate-env` only; end-to-end custom training is later.
+- Custom envs: `new-env`, `validate-env` / `--runtime`, and smoke/train via `*.py` module paths.
 - Isaac Lab and other heavy backends are out of scope until explicitly planned.

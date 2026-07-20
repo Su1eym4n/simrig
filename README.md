@@ -84,6 +84,22 @@ Follow:
 
 - [AGENTS.md](AGENTS.md) — safety rules and command preferences
 - [docs/agent_workflow.md](docs/agent_workflow.md) — step-by-step agent workflow
+- [skills/simrig/SKILL.md](skills/simrig/SKILL.md) — portable skill for Claude Code / Codex / Cursor
+
+### Install the skill globally (any folder)
+
+Anyone can use SimRig with Claude Code / Codex / Cursor **without** opening this
+repo. Full steps: [skills/README.md](skills/README.md).
+
+```bash
+pip install -e ".[playground]"   # put `simrig` on PATH; PyPI later
+
+cp -R skills/simrig ~/.claude/skills/simrig   # Claude Code
+cp -R skills/simrig ~/.codex/skills/simrig    # Codex
+cp -R skills/simrig ~/.cursor/skills/simrig   # Cursor
+```
+
+Restart the agent session, then ask it to “use the simrig skill”.
 
 ## Model inspection
 
@@ -123,24 +139,41 @@ or `--hf-token`. Pin with `--hf-revision`.
 Browser preview defaults to `--render-mode mujoco`. Use `--render-mode topdown`
 only for the lightweight schematic debug view.
 
-## Custom environments (basic)
+## Custom environments
 
-Raw Menagerie models are not automatically trainable. v0.1 provides a scaffold
-and a static checklist only — **not** end-to-end custom training.
+Raw Menagerie models are not automatically trainable. Scaffold a module, fill in
+the task logic, then smoke/train with the **`.py` path**:
 
 ```bash
 simrig inspect-model path/to/scene.xml
 simrig new-env my_robot_reach --model path/to/scene.xml --template mjx
 simrig validate-env envs/my_robot_reach.py
+simrig validate-env envs/my_robot_reach.py --runtime
+simrig smoke envs/my_robot_reach.py --steps 10
+simrig train envs/my_robot_reach.py --preset smoke
 ```
 
 The generated file is an editable starter. You still need to define reset,
-observations, rewards, termination, and action mapping. Passing `validate-env`
-means the checklist structure is present; it does **not** mean the env is
-trainable.
+observations, rewards, termination, and action mapping. Prefer observation keys
+`state` and `privileged_state` for SimRig's PPO defaults.
 
-**Coming later:** load, smoke, train, and eval custom env modules end-to-end
-(including agent-assisted env authoring).
+- `validate-env` (static): structure checklist only
+- `validate-env --runtime`: import + construct + reset/step when JAX is available
+- Passing static validation does **not** mean the env is trainable
+
+### Test-drive example
+
+A tiny 2-DOF arm + reach task lives under [`examples/`](examples/) so you can
+exercise the custom-env CLI without bringing your own model:
+
+```bash
+pip install -e ".[playground]"
+simrig validate-env examples/demo_reach.py --runtime
+simrig smoke examples/demo_reach.py --steps 10
+simrig train examples/demo_reach.py --preset smoke
+```
+
+See [`examples/README.md`](examples/README.md).
 
 ## Outputs
 

@@ -93,6 +93,12 @@ class CliTests(unittest.TestCase):
         self.assertFalse(data["passed"])
         self.assertTrue(any("file not found" in item for item in data["missing"]))
 
+    def test_cli_validate_env_runtime_flag_parses(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["validate-env", "envs/reach.py", "--runtime"])
+        self.assertTrue(args.runtime)
+        self.assertEqual(args.path, Path("envs/reach.py"))
+
     def test_demo_command_parses_policy_env_and_command(self) -> None:
         parser = build_parser()
 

@@ -40,10 +40,14 @@ def _mjx_template(*, name: str, model: str) -> str:
     return f'''"""Editable SimRig MJX environment starter for {name}.
 
 NOT TRAINABLE YET.
-This file is intentionally incomplete. A raw MuJoCo model is not a training
-task until you define reset logic, observations, rewards, termination, and
-action mapping. SimRig v0.1 does not train custom env modules end-to-end —
-use `simrig validate-env` for a static checklist only.
+Fill the SECTION blocks below, remove this banner when reset/step work, then:
+
+    simrig validate-env PATH --runtime
+    simrig smoke PATH --steps 10
+    simrig train PATH --preset smoke
+
+Prefer subclassing mujoco_playground._src.mjx_env.MjxEnv when Playground is
+installed. Return obs as dict keys `state` and `privileged_state` for SimRig PPO.
 """
 
 from __future__ import annotations
@@ -60,24 +64,29 @@ def default_config() -> dict[str, Any]:
     return {{
         "episode_length": 1000,
         "action_scale": 1.0,
+        "ctrl_dt": 0.02,
+        "sim_dt": 0.002,
         "impl": "jax",
     }}
+
+
+def make_env(config_overrides: dict[str, Any] | None = None) -> "CustomEnv":
+    """Factory used by `simrig smoke/train/eval` for this module."""
+    config = default_config()
+    if config_overrides:
+        config.update(config_overrides)
+    return CustomEnv(config=config)
 
 
 class CustomEnv:
     """Replace this starter with a real mjx_env.MjxEnv implementation.
 
-    Required methods/properties for future SimRig/Brax training:
-    - reset(rng)
-    - step(state, action)
-    - observation_size
+    Required for SimRig smoke/train/eval:
+    - reset(rng) -> state with .obs, .reward, .done, .data
+    - step(state, action) -> state
+    - observation_size (dict with `state` and `privileged_state` preferred)
     - action_size
-    - mj_model
-    - mjx_model
-
-    Recommended observation keys:
-    - state: policy observation
-    - privileged_state: value-function observation
+    - mj_model / mjx_model (for demos and previews)
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -90,7 +99,7 @@ class CustomEnv:
 
     def reset(self, rng: Any) -> Any:
         # SECTION: reset
-        # Sample initial qpos/qvel (and any task state). Return a Brax-style state.
+        # Sample initial qpos/qvel (and any task state). Return a Brax/MJX state.
         raise NotImplementedError("Implement reset randomization.")
 
     def step(self, state: Any, action: Any) -> Any:
@@ -110,7 +119,7 @@ class CustomEnv:
 
     @property
     def observation_size(self) -> Any:
-        raise NotImplementedError("Return policy/privileged observation sizes.")
+        raise NotImplementedError("Return dict observation sizes for state/privileged_state.")
 
     @property
     def action_size(self) -> int:

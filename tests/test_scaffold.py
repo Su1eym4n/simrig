@@ -20,6 +20,7 @@ class ScaffoldTests(unittest.TestCase):
                 self.assertIn(marker, text)
             self.assertIn("def reset", text)
             self.assertIn("def step", text)
+            self.assertIn("def make_env", text)
             self.assertIn("observation_size", text)
             self.assertIn("action_size", text)
 

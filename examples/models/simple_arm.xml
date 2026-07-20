@@ -1,0 +1,38 @@
+<mujoco model="simple_arm">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <default>
+    <joint damping="0.5" armature="0.01" limited="true"/>
+    <geom rgba="0.7 0.7 0.8 1" friction="1 0.5 0.5"/>
+  </default>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="1 1 0.05" rgba="0.2 0.2 0.2 1"/>
+
+    <!-- Target marker (mocap-free visual only; env moves site via code or we use a body) -->
+    <body name="target" pos="0.25 0.0 0.15">
+      <geom name="target_geom" type="sphere" size="0.03" rgba="0.9 0.2 0.2 0.5" contype="0" conaffinity="0"/>
+      <site name="target_site" pos="0 0 0" size="0.01"/>
+    </body>
+
+    <body name="base" pos="0 0 0.05">
+      <geom name="base_geom" type="cylinder" size="0.04 0.05" rgba="0.4 0.4 0.45 1"/>
+      <body name="link1" pos="0 0 0.05">
+        <joint name="shoulder" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+        <geom name="link1_geom" type="capsule" fromto="0 0 0 0.2 0 0" size="0.025"/>
+        <body name="link2" pos="0.2 0 0">
+          <joint name="elbow" type="hinge" axis="0 1 0" range="-2.5 2.5"/>
+          <geom name="link2_geom" type="capsule" fromto="0 0 0 0.18 0 0" size="0.02"/>
+          <site name="ee_site" pos="0.18 0 0" size="0.015" rgba="0.1 0.8 0.2 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="shoulder_act" joint="shoulder" kp="60" ctrlrange="-1.57 1.57"/>
+    <position name="elbow_act" joint="elbow" kp="40" ctrlrange="-2.5 2.5"/>
+  </actuator>
+</mujoco>

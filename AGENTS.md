@@ -1,8 +1,9 @@
 # SimRig Agent Guidelines
 
 SimRig helps users move from robot models or known simulation tasks toward a
-safe training/evaluation workflow. Prefer existing MuJoCo Playground envs.
-Custom envs are a basic scaffold + checklist in v0.1 — not end-to-end training.
+safe training/evaluation workflow. Prefer existing MuJoCo Playground envs when
+one fits. Custom `*.py` env modules can be smoked/trained after they implement
+reset/step correctly.
 
 ## Workflow
 
@@ -20,14 +21,13 @@ Custom envs are a basic scaffold + checklist in v0.1 — not end-to-end training
      localhost preview with orbit/zoom camera controls.
    - Use `simrig view-model` to inspect raw Menagerie/XML robots with joint sliders.
    - Use `simrig demo` only when a human wants the native desktop MuJoCo viewer.
-3. Custom envs (basic only in v0.1).
-   - Use `simrig new-env` only as a starter template after the user chooses a task.
-   - Run `simrig validate-env path/to/env.py` for a static checklist.
-   - Passing validate-env does **not** mean the env is trainable.
-   - Do **not** run `simrig train` on a custom env module; v0.1 trains Playground
-     registry names only.
-   - A real custom env must still define reset, step, action mapping,
-     observations, rewards, and termination before any future train path.
+3. Custom envs (module path ending in `.py`).
+   - Scaffold with `simrig new-env` only after the user chooses a task.
+   - Run `simrig validate-env PATH` (structure) then `simrig validate-env PATH --runtime`.
+   - Only propose `simrig smoke PATH` / `simrig train PATH` after runtime validation
+     passes (or the user explicitly wants to debug failures).
+   - Do not invent rewards/observations from model names alone.
+   - Prefer obs dict keys `state` and `privileged_state` for SimRig PPO defaults.
 4. Keep generated code editable and ordinary.
    - Do not hide reward logic or environment assumptions in opaque configs.
 5. Be backend-aware.

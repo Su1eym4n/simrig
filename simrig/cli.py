@@ -10,7 +10,7 @@ from typing import Any
 
 from simrig.core import report_markdown, to_dict
 from simrig.huggingface import resolve_policy_checkpoint
-from simrig.io import save_json, save_report_pair
+from simrig.io import save_json, save_report_pair, slugify
 from simrig.mujoco_backend import inspect_model, list_models
 from simrig.paths import ensure_project_dirs
 from simrig.playground_backend import (
@@ -65,22 +65,34 @@ def build_parser() -> argparse.ArgumentParser:
     list_envs_parser.add_argument("--json", action="store_true")
     list_envs_parser.set_defaults(func=_cmd_list_envs)
 
-    inspect_env_parser = sub.add_parser("inspect-env", help="Inspect a trainable env.")
-    inspect_env_parser.add_argument("env_name")
+    inspect_env_parser = sub.add_parser("inspect-env", help="Inspect a Playground or custom env.")
+    inspect_env_parser.add_argument(
+        "env_name",
+        help="Playground env name or path to a custom *.py env module.",
+    )
     inspect_env_parser.add_argument("--backend", default="mujoco-playground")
     inspect_env_parser.add_argument("--json", action="store_true")
     inspect_env_parser.add_argument("--save-report", action="store_true")
     inspect_env_parser.set_defaults(func=_cmd_inspect_env)
 
     smoke_parser = sub.add_parser("smoke", help="Run a short env reset/step smoke test.")
-    smoke_parser.add_argument("env_name")
+    smoke_parser.add_argument(
+        "env_name",
+        help="Playground env name or path to a custom *.py env module.",
+    )
     smoke_parser.add_argument("--backend", default="mujoco-playground")
     smoke_parser.add_argument("--steps", type=int, default=10)
     smoke_parser.add_argument("--json", action="store_true")
     smoke_parser.set_defaults(func=_cmd_smoke)
 
-    train_parser = sub.add_parser("train", help="Train a Playground env with Brax PPO.")
-    train_parser.add_argument("env_name")
+    train_parser = sub.add_parser(
+        "train",
+        help="Train a Playground env or custom *.py module with Brax PPO.",
+    )
+    train_parser.add_argument(
+        "env_name",
+        help="Playground env name or path to a custom *.py env module.",
+    )
     train_parser.add_argument("--backend", default="mujoco-playground")
     train_parser.add_argument("--preset", choices=("smoke", "local", "cloud"), default="smoke")
     train_parser.add_argument("--output", type=Path)
@@ -91,7 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     eval_parser = sub.add_parser("eval", help="Headless policy eval.")
     eval_parser.add_argument("checkpoint")
-    eval_parser.add_argument("--env", dest="env_name", required=True)
+    eval_parser.add_argument(
+        "--env",
+        dest="env_name",
+        required=True,
+        help="Playground env name or path to a custom *.py env module.",
+    )
     eval_parser.add_argument("--backend", default="mujoco-playground")
     eval_parser.add_argument("--steps", type=int, default=500)
     eval_parser.add_argument("--small-network", action=argparse.BooleanOptionalAction, default=None)
@@ -167,9 +184,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_env_parser = sub.add_parser(
         "validate-env",
-        help="Run a static checklist on a custom env starter (not a trainability claim).",
+        help="Validate a custom env module (static checklist; optional runtime).",
     )
     validate_env_parser.add_argument("path", type=Path)
+    validate_env_parser.add_argument(
+        "--runtime",
+        action="store_true",
+        help="Import the module and run construct/reset/step checks when possible.",
+    )
     validate_env_parser.add_argument("--json", action="store_true")
     validate_env_parser.set_defaults(func=_cmd_validate_env)
 
@@ -248,7 +270,7 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         steps=args.steps,
         small_network=args.small_network,
     )
-    save_json(Path("reports") / f"{args.env_name}_eval.json", result)
+    save_json(Path("reports") / f"{slugify(args.env_name)}_eval.json", result)
     _print(result, as_json=args.json)
 
 
@@ -321,7 +343,7 @@ def _cmd_new_env(args: argparse.Namespace) -> None:
 
 
 def _cmd_validate_env(args: argparse.Namespace) -> int:
-    result = validate_env(args.path)
+    result = validate_env(args.path, runtime=bool(args.runtime))
     _print(result, as_json=args.json)
     if not args.json:
         status = "passed" if result.passed else "failed"

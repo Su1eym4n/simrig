@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from simrig.core import BackendInfo, EnvInspectionReport, RunConfig, SmokeResult, TrainabilityStatus
+from simrig.custom_env import is_env_module_path, load_custom_env, resolve_env_label
 from simrig.io import default_run_dir, save_json
 from simrig.paths import find_menagerie
 from simrig.presets import hidden_sizes, preset, resolve_small_network
@@ -30,6 +31,7 @@ def _import_training_deps():
     try:
         import jax  # type: ignore
         import jax.numpy as jp  # type: ignore
+        _patch_jax_brax_compat(jax)
         from brax.io import model as brax_model  # type: ignore
         from brax.training.acme import running_statistics  # type: ignore
         from brax.training.agents.ppo import networks as ppo_networks  # type: ignore
@@ -41,6 +43,29 @@ def _import_training_deps():
             "MuJoCo Playground before running train/eval commands."
         ) from exc
     return jax, jp, brax_model, running_statistics, ppo_networks, ppo, wrapper
+
+
+def _patch_jax_brax_compat(jax: Any) -> None:
+    """Restore APIs Brax still calls that newer JAX hid behind AttributeError.
+
+    JAX 0.10+ makes ``jax.device_put_replicated`` raise, while Brax 0.14 PPO
+    still calls it. Re-bind the private implementation when missing.
+    """
+    if "device_put_replicated" not in jax.__dict__:
+        try:
+            from jax._src.api import device_put_replicated as _device_put_replicated  # type: ignore
+        except ImportError:
+            pass
+        else:
+            jax.device_put_replicated = _device_put_replicated  # type: ignore[attr-defined]
+
+    if "device_put_sharded" not in jax.__dict__:
+        try:
+            from jax._src.api import device_put_sharded as _device_put_sharded  # type: ignore
+        except ImportError:
+            pass
+        else:
+            jax.device_put_sharded = _device_put_sharded  # type: ignore[attr-defined]
 
 
 def backend_info() -> BackendInfo:
@@ -63,6 +88,10 @@ def list_envs(backend: str = "mujoco-playground") -> list[dict[str, Any]]:
 
 
 def load_env(env_name: str, config_overrides: dict[str, Any] | None = None):
+    """Load a Playground registry env or a custom ``*.py`` env module."""
+    if is_env_module_path(env_name):
+        return load_custom_env(env_name, config_overrides=config_overrides)
+
     _configure_menagerie()
     registry = _import_registry()
     config_overrides = _default_overrides(registry, env_name, config_overrides)
@@ -70,25 +99,33 @@ def load_env(env_name: str, config_overrides: dict[str, Any] | None = None):
 
 
 def inspect_env(env_name: str, *, backend: str = "mujoco-playground") -> EnvInspectionReport:
-    """Load a Playground env and report trainability metadata."""
+    """Load a Playground or custom env and report trainability metadata."""
     _validate_backend(backend)
+    label = resolve_env_label(env_name)
+
+    if is_env_module_path(env_name):
+        return _inspect_custom_env(env_name, label=label, backend=backend)
+
     registry = _import_registry()
     if env_name not in registry.ALL_ENVS:
         return EnvInspectionReport(
-            name=env_name,
+            name=label,
             backend=backend,
             status=TrainabilityStatus.FAILED,
             available=False,
             loaded=False,
             errors=[f"Unknown environment: {env_name}"],
-            notes=[f"Available environments: {', '.join(sorted(registry.ALL_ENVS))}"],
+            notes=[
+                f"Available environments: {', '.join(sorted(registry.ALL_ENVS))}",
+                "Or pass a custom env module path ending in .py",
+            ],
         )
 
     try:
         env = load_env(env_name)
     except Exception as exc:
         return EnvInspectionReport(
-            name=env_name,
+            name=label,
             backend=backend,
             status=TrainabilityStatus.FAILED,
             available=True,
@@ -103,19 +140,84 @@ def inspect_env(env_name: str, *, backend: str = "mujoco-playground") -> EnvInsp
     except Exception:
         randomizer = None
     return EnvInspectionReport(
-        name=env_name,
+        name=label,
         backend=backend,
         status=TrainabilityStatus.TRAINABLE_EXISTING_ENV,
         available=True,
         loaded=True,
         observation_size=getattr(env, "observation_size", None),
-        action_size=int(getattr(env, "action_size", 0)),
+        action_size=int(getattr(env, "action_size", 0) or 0),
         xml_path=str(xml_path) if xml_path else None,
         model_bodies=int(mj_model.nbody) if mj_model is not None else None,
         model_actuators=int(mj_model.nu) if mj_model is not None else None,
         has_domain_randomizer=randomizer is not None,
-        notes=["Existing MuJoCo Playground envs are trainable because they define reset, step, reward, observations, and termination."],
+        notes=[
+            "Existing MuJoCo Playground envs are trainable because they define "
+            "reset, step, reward, observations, and termination."
+        ],
     )
+
+
+def _inspect_custom_env(env_name: str, *, label: str, backend: str) -> EnvInspectionReport:
+    try:
+        env = load_env(env_name)
+    except Exception as exc:
+        return EnvInspectionReport(
+            name=label,
+            backend=backend,
+            status=TrainabilityStatus.NEEDS_CUSTOM_ENV,
+            available=True,
+            loaded=False,
+            errors=[str(exc)],
+            notes=[
+                "Custom env module failed to load. Finish implementation, then "
+                "run `simrig validate-env PATH --runtime` and `simrig smoke PATH`."
+            ],
+        )
+
+    mj_model = getattr(env, "mj_model", None)
+    xml_path = getattr(env, "xml_path", None)
+    warnings = _obs_key_warnings(getattr(env, "observation_size", None))
+    return EnvInspectionReport(
+        name=label,
+        backend=backend,
+        status=TrainabilityStatus.TRAINABLE_EXISTING_ENV,
+        available=True,
+        loaded=True,
+        observation_size=getattr(env, "observation_size", None),
+        action_size=int(getattr(env, "action_size", 0) or 0),
+        xml_path=str(xml_path) if xml_path else None,
+        model_bodies=int(mj_model.nbody) if mj_model is not None else None,
+        model_actuators=int(mj_model.nu) if mj_model is not None else None,
+        has_domain_randomizer=False,
+        warnings=warnings,
+        notes=[
+            f"Custom env module: {env_name}",
+            "Run `simrig smoke` before `simrig train`.",
+            "SimRig PPO defaults expect observation keys `state` and `privileged_state`.",
+        ],
+    )
+
+
+def _obs_key_warnings(observation_size: Any) -> list[str]:
+    warnings: list[str] = []
+    if observation_size is None:
+        warnings.append("observation_size is missing.")
+        return warnings
+    if isinstance(observation_size, dict):
+        if "state" not in observation_size:
+            warnings.append("observation_size is missing key `state` (policy obs).")
+        if "privileged_state" not in observation_size:
+            warnings.append(
+                "observation_size is missing key `privileged_state` (value obs). "
+                "SimRig PPO defaults expect it."
+            )
+    else:
+        warnings.append(
+            "observation_size is flat; SimRig PPO defaults expect dict keys "
+            "`state` and `privileged_state`."
+        )
+    return warnings
 
 
 def smoke_env(
@@ -127,6 +229,7 @@ def smoke_env(
 ) -> SmokeResult:
     """Run a short reset/zero-action step test."""
     _validate_backend(backend)
+    label = resolve_env_label(env_name)
     jax, jp, *_ = _import_training_deps()
     try:
         env = load_env(env_name)
@@ -137,7 +240,7 @@ def smoke_env(
         for completed in range(1, steps + 1):
             state = step(state, jp.zeros(env.action_size))
         return SmokeResult(
-            env_name=env_name,
+            env_name=label,
             backend=backend,
             steps_requested=steps,
             steps_completed=completed,
@@ -149,7 +252,7 @@ def smoke_env(
         )
     except Exception as exc:
         return SmokeResult(
-            env_name=env_name,
+            env_name=label,
             backend=backend,
             steps_requested=steps,
             steps_completed=0,
@@ -166,13 +269,14 @@ def train_ppo(
     backend: str = "mujoco-playground",
     overrides: dict[str, Any] | None = None,
 ) -> RunConfig:
-    """Train a MuJoCo Playground env with Brax PPO."""
+    """Train a Playground or custom env module with Brax PPO."""
     _validate_backend(backend)
     jax, jp, brax_model, _, ppo_networks, ppo, wrapper = _import_training_deps()
     del jax, jp
+    label = resolve_env_label(env_name)
     config = preset(preset_name)
     config.update(overrides or {})
-    output_dir = Path(output) if output is not None else default_run_dir(env_name, preset_name)
+    output_dir = Path(output) if output is not None else default_run_dir(label, preset_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     # Orbax requires absolute checkpoint paths.
     output_dir = output_dir.resolve()
@@ -194,12 +298,22 @@ def train_ppo(
         print(f"steps={num_steps:,} eval_reward={reward:.3f} eval_length={length:.1f}")
 
     run_config = RunConfig(
-        env_name=env_name,
+        env_name=label,
         backend=backend,
         preset=preset_name,
         output_dir=str(output_dir),
-        config=config,
-        command=[sys.executable, "-m", "simrig.cli", "train", env_name, "--preset", preset_name, "--output", str(output_dir)],
+        config={**config, "env_ref": str(env_name)},
+        command=[
+            sys.executable,
+            "-m",
+            "simrig.cli",
+            "train",
+            str(env_name),
+            "--preset",
+            preset_name,
+            "--output",
+            str(output_dir),
+        ],
     )
     save_json(output_dir / "config.json", run_config)
     _, params, metrics = ppo.train(
@@ -270,7 +384,7 @@ def eval_policy(
         if bool(state.done):
             break
     return {
-        "env_name": env_name,
+        "env_name": resolve_env_label(env_name),
         "backend": backend,
         "checkpoint": str(checkpoint),
         "steps_requested": steps,
@@ -351,7 +465,7 @@ def demo_policy(
             viewer.add_overlay(
                 mujoco.mjtGridPos.mjGRID_TOPRIGHT,
                 "SimRig demo\nEnv\nReward\nSteps",
-                f"\n{env_name}\n{float(state.reward):.4f}\n{completed}",
+                f"\n{resolve_env_label(env_name)}\n{float(state.reward):.4f}\n{completed}",
             )
             viewer.render()
             time.sleep(max(0.0, env.dt / max(speed, 1e-6) - 0.001))
@@ -361,7 +475,7 @@ def demo_policy(
         viewer.close()
 
     return {
-        "env_name": env_name,
+        "env_name": resolve_env_label(env_name),
         "backend": backend,
         "checkpoint": str(checkpoint),
         "steps_requested": steps,
