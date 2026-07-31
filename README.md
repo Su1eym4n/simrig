@@ -29,27 +29,28 @@ supported backend.
 
 ## Installation
 
-SimRig requires Python 3.10 or newer.
-
-Until the package is published to PyPI, install it from GitHub:
+SimRig requires Python 3.10 or newer. Install the Playground training stack
+from PyPI:
 
 ```bash
-git clone https://github.com/Su1eym4n/simrig.git
-cd simrig
-
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[playground]"
+python -m pip install "simrig[playground]"
 
 simrig --version
 ```
 
-The editable installation remains connected to the clone. Activate its virtual
-environment before using SimRig from another terminal or project:
+For an editable source installation, clone the repository and install from its
+root instead:
 
 ```bash
-source /path/to/simrig/.venv/bin/activate
+git clone https://github.com/Su1eym4n/simrig.git
+cd simrig
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[playground]"
 ```
 
 Development dependencies, tests, and contribution checks are documented in

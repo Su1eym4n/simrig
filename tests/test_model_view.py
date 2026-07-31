@@ -108,15 +108,15 @@ class ModelViewTests(unittest.TestCase):
             self.assertEqual(controls[0].max, 1.5)
 
     def test_model_view_starts_from_first_authored_keyframe(self) -> None:
-        try:
-            from simrig.model_view import ModelViewSession
-        except (ImportError, RuntimeError) as exc:
-            self.skipTest(str(exc))
+        from simrig.model_view import ModelViewSession
 
         with tempfile.TemporaryDirectory() as tmp:
             xml = Path(tmp) / "keyframed_arm.xml"
             xml.write_text(KEYFRAME_XML, encoding="utf-8")
-            session = ModelViewSession(xml)
+            try:
+                session = ModelViewSession(xml)
+            except (ImportError, RuntimeError) as exc:
+                self.skipTest(str(exc))
             try:
                 payload = session.joints_payload()
                 self.assertEqual(payload["render_mode"], "threejs")
