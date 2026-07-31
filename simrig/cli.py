@@ -163,9 +163,12 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--paused", action="store_true", help="Start the browser preview paused.")
     preview_parser.add_argument(
         "--render-mode",
-        choices=("topdown", "mujoco"),
-        default="mujoco",
-        help="Browser render mode. mujoco uses MuJoCo offscreen rendering; topdown is a schematic debug view.",
+        choices=("threejs", "mujoco", "topdown"),
+        default="threejs",
+        help=(
+            "Browser render mode. threejs renders rollout geometry interactively in WebGL; "
+            "mujoco streams offscreen frames; topdown is a schematic debug view."
+        ),
     )
     preview_parser.set_defaults(func=_cmd_preview)
 

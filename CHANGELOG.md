@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-07-31
+
+- `simrig preview` now uses the Three.js/WebGL renderer by default, with a
+  server-side rollout clock, live geom-transform updates, and a tracking camera
+  that follows the evaluated robot without coupling orbit controls to frame
+  rendering.
+- `simrig preview --render-mode mujoco` retains the streamed MuJoCo policy
+  preview for fully local/offline rendering.
+
 ## 0.2.0 - 2026-07-31
 
 - `simrig view-model` now defaults to a GPU-accelerated Three.js/WebGL viewer

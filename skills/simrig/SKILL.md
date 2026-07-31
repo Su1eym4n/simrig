@@ -180,8 +180,12 @@ simrig preview runs/RUN/policy.params --env ENV_OR_PATH --port 8765
 Use `--command X Y YAW` with `eval` and `preview` only for environments that
 expose command-like state. Repeat headless evaluation with distinct `--seed`
 values when the task contract requires multiple trials. Open
-`http://127.0.0.1:8765/`. Prefer `preview` for agent-visible review; use `demo`
-only when the user explicitly wants the native desktop viewer.
+`http://127.0.0.1:8765/`. Preview defaults to a Three.js/WebGL scene driven by
+live geom transforms from a server-side rollout clock, so browser-local orbit,
+zoom, and pan do not interrupt policy stepping. Use `--render-mode mujoco` for
+the local streamed renderer or `--render-mode topdown` for the schematic
+fallback. Prefer `preview` for agent-visible review; use `demo` only when the
+user explicitly wants the native desktop viewer.
 
 Evaluate across multiple seeds and the scenarios from the task contract.
 Compare success rate and task-specific metrics, not just total reward. Read

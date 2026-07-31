@@ -82,8 +82,11 @@ Preview the exact evaluated pair:
 simrig preview POLICY --env ENV_OR_PATH --port 8765
 ```
 
-Use `--render-mode topdown` only as a schematic debugging fallback. For raw
-models without a policy, use `simrig view-model` instead.
+The default `threejs` mode updates browser-side visual geometry from the live
+rollout while keeping camera interaction local. Use `--render-mode mujoco` for
+the streamed MuJoCo renderer and `--render-mode topdown` only as a schematic
+debugging fallback. For raw models without a policy, use `simrig view-model`
+instead.
 
 ## Failure triage
 

@@ -7,7 +7,7 @@ from simrig.rendering import CameraState, ensure_offscreen_framebuffer, preferre
 
 
 class RenderingTests(unittest.TestCase):
-    def test_preview_defaults_to_mujoco_render_mode(self) -> None:
+    def test_preview_defaults_to_threejs_render_mode(self) -> None:
         parser = build_parser()
 
         args = parser.parse_args(
@@ -19,7 +19,36 @@ class RenderingTests(unittest.TestCase):
             ]
         )
 
+        self.assertEqual(args.render_mode, "threejs")
+
+    def test_threejs_preview_uses_live_scene_state(self) -> None:
+        from simrig.preview import _html
+
+        page = _html("threejs")
+
+        self.assertIn("three@0.184.0", page)
+        self.assertIn("/scene.json", page)
+        self.assertIn("/state.json", page)
+        self.assertIn("followRobot", page)
+        self.assertIn('id="three-view"', page)
+
+    def test_preview_retains_streamed_mujoco_mode(self) -> None:
+        from simrig.preview import _html
+
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "preview",
+                "policy.params",
+                "--env",
+                "Go1JoystickFlatTerrain",
+                "--render-mode",
+                "mujoco",
+            ]
+        )
+
         self.assertEqual(args.render_mode, "mujoco")
+        self.assertIn("/frame.jpg", _html("mujoco"))
 
     def test_preferred_gl_backends_on_darwin(self) -> None:
         backends = preferred_gl_backends()

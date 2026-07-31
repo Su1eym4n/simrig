@@ -35,9 +35,10 @@ Use this workflow when guiding a user with SimRig.
    simrig preview runs/.../policy.params --env Go1JoystickFlatTerrain --command 0.5 0.0 0.0 --port 8765
    ```
 
-   Open `http://127.0.0.1:8765/`. The page streams rendered frames from the
-   local Python simulation and exposes reset, pause/resume, and command
-   controls.
+   Open `http://127.0.0.1:8765/`. The default Three.js/WebGL page receives live
+   geom transforms from a server-side rollout clock and exposes orbit, zoom,
+   pan, reset, pause/resume, and command controls. Use `--render-mode mujoco`
+   for the local streamed renderer.
 
 6. Run an interactive desktop demo only when a human wants the native MuJoCo UI:
 

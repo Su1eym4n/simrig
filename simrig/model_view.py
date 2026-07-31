@@ -18,6 +18,7 @@ from simrig.browser_render import MujocoFramePump
 from simrig.browser_shell import camera_interaction_script, frame_poll_script, viewer_styles
 from simrig.mujoco_backend import _import_mujoco, resolve_model_path
 from simrig.rendering import make_tracking_camera, tracking_body_id
+from simrig.three_scene import geom_transforms, scene_payload
 
 
 @dataclass(frozen=True)
@@ -324,106 +325,20 @@ class ModelViewSession:
         """Return static render geometry plus the current world transforms."""
 
         if self._scene_payload is None:
-            visible_geom_ids = [
-                geom_id
-                for geom_id in range(self.model.ngeom)
-                if int(self.model.geom_group[geom_id]) <= 2
-            ]
-            used_mesh_ids = sorted(
-                {
-                    int(self.model.geom_dataid[geom_id])
-                    for geom_id in visible_geom_ids
-                    if int(self.model.geom_type[geom_id])
-                    == int(self.mujoco.mjtGeom.mjGEOM_MESH)
-                    and int(self.model.geom_dataid[geom_id]) >= 0
-                }
+            self._scene_payload = scene_payload(
+                self.mujoco,
+                self.model,
+                self.data,
+                model_name=self.model_path.parent.name or self.model_path.stem,
             )
-            meshes = [self._mesh_payload(mesh_id) for mesh_id in used_mesh_ids]
-            geoms = [self._geom_payload(geom_id) for geom_id in visible_geom_ids]
-            self._scene_payload = {
-                "model_name": self.model_path.parent.name or self.model_path.stem,
-                "coordinate_system": "z-up",
-                "meshes": meshes,
-                "geoms": geoms,
-            }
+            self._scene_payload.pop("transforms", None)
         return {
             **self._scene_payload,
             "transforms": self.geom_transforms(),
         }
 
     def geom_transforms(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": geom_id,
-                "position": np.asarray(self.data.geom_xpos[geom_id], dtype=float).tolist(),
-                "matrix": np.asarray(self.data.geom_xmat[geom_id], dtype=float)
-                .reshape(-1)
-                .tolist(),
-            }
-            for geom_id in range(self.model.ngeom)
-        ]
-
-    def _mesh_payload(self, mesh_id: int) -> dict[str, Any]:
-        vert_adr = int(self.model.mesh_vertadr[mesh_id])
-        vert_num = int(self.model.mesh_vertnum[mesh_id])
-        face_adr = int(self.model.mesh_faceadr[mesh_id])
-        face_num = int(self.model.mesh_facenum[mesh_id])
-        name = self.mujoco.mj_id2name(
-            self.model,
-            self.mujoco.mjtObj.mjOBJ_MESH,
-            mesh_id,
-        )
-        return {
-            "id": mesh_id,
-            "name": name or f"mesh_{mesh_id}",
-            "vertices": np.asarray(
-                self.model.mesh_vert[vert_adr : vert_adr + vert_num],
-                dtype=np.float32,
-            )
-            .reshape(-1)
-            .tolist(),
-            "indices": np.asarray(
-                self.model.mesh_face[face_adr : face_adr + face_num],
-                dtype=np.uint32,
-            )
-            .reshape(-1)
-            .tolist(),
-        }
-
-    def _geom_payload(self, geom_id: int) -> dict[str, Any]:
-        material_id = int(self.model.geom_matid[geom_id])
-        if material_id >= 0:
-            rgba = np.asarray(self.model.mat_rgba[material_id], dtype=float)
-            specular = float(self.model.mat_specular[material_id])
-            shininess = float(self.model.mat_shininess[material_id])
-            reflectance = float(self.model.mat_reflectance[material_id])
-            emission = float(self.model.mat_emission[material_id])
-        else:
-            rgba = np.asarray(self.model.geom_rgba[geom_id], dtype=float)
-            specular = 0.25
-            shininess = 0.25
-            reflectance = 0.0
-            emission = 0.0
-        name = self.mujoco.mj_id2name(
-            self.model,
-            self.mujoco.mjtObj.mjOBJ_GEOM,
-            geom_id,
-        )
-        return {
-            "id": geom_id,
-            "name": name or f"geom_{geom_id}",
-            "type": int(self.model.geom_type[geom_id]),
-            "mesh_id": int(self.model.geom_dataid[geom_id]),
-            "group": int(self.model.geom_group[geom_id]),
-            "size": np.asarray(self.model.geom_size[geom_id], dtype=float).tolist(),
-            "rgba": rgba.tolist(),
-            "material": {
-                "specular": specular,
-                "shininess": shininess,
-                "reflectance": reflectance,
-                "emission": emission,
-            },
-        }
+        return geom_transforms(self.model, self.data)
 
     def frame_jpeg(self) -> bytes:
         if self._frame_pump is None:
