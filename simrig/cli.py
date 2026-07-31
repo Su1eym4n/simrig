@@ -183,9 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
     view_model_parser.add_argument("--camera")
     view_model_parser.add_argument(
         "--render-mode",
-        choices=("topdown", "mujoco"),
-        default="mujoco",
-        help="Browser render mode. mujoco uses MuJoCo offscreen rendering; topdown is a schematic debug view.",
+        choices=("threejs", "mujoco", "topdown"),
+        default="threejs",
+        help=(
+            "Browser render mode. threejs renders geometry interactively in WebGL; "
+            "mujoco streams offscreen frames; topdown is a schematic debug view."
+        ),
     )
     view_model_parser.set_defaults(func=_cmd_view_model)
 

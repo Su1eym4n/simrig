@@ -23,6 +23,20 @@ ARM_XML = """\
 </mujoco>
 """
 
+KEYFRAME_XML = """\
+<mujoco model="keyframed_arm">
+  <worldbody>
+    <body name="link">
+      <joint name="shoulder" type="hinge" range="-1 1"/>
+      <geom type="capsule" size="0.05 0.2"/>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="home" qpos="0.75"/>
+  </keyframe>
+</mujoco>
+"""
+
 
 class ModelViewTests(unittest.TestCase):
     def test_view_model_command_parses_browser_options(self) -> None:
@@ -45,6 +59,23 @@ class ModelViewTests(unittest.TestCase):
         self.assertEqual(str(args.menagerie), "/tmp/menagerie")
         self.assertEqual(args.port, 8770)
         self.assertEqual(args.render_mode, "topdown")
+
+    def test_view_model_defaults_to_threejs(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(["view-model", "unitree_go1"])
+
+        self.assertEqual(args.render_mode, "threejs")
+
+    def test_threejs_view_uses_webgl_scene_endpoint(self) -> None:
+        from simrig.model_view import _html
+
+        page = _html("threejs")
+
+        self.assertIn("three@0.184.0", page)
+        self.assertIn("OrbitControls", page)
+        self.assertIn("/scene.json", page)
+        self.assertIn('id="three-view"', page)
 
     def test_joint_controls_use_joint_names_when_mujoco_available(self) -> None:
         try:
@@ -75,6 +106,27 @@ class ModelViewTests(unittest.TestCase):
             self.assertTrue(controls[0].limited)
             self.assertEqual(controls[0].min, -1.5)
             self.assertEqual(controls[0].max, 1.5)
+
+    def test_model_view_starts_from_first_authored_keyframe(self) -> None:
+        try:
+            from simrig.model_view import ModelViewSession
+        except (ImportError, RuntimeError) as exc:
+            self.skipTest(str(exc))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            xml = Path(tmp) / "keyframed_arm.xml"
+            xml.write_text(KEYFRAME_XML, encoding="utf-8")
+            session = ModelViewSession(xml)
+            try:
+                payload = session.joints_payload()
+                self.assertEqual(payload["render_mode"], "threejs")
+                self.assertEqual(payload["initial_keyframe"], "home")
+                self.assertAlmostEqual(payload["controls"][0]["value"], 0.75)
+                session.set_joint_value(0, 0, -0.25)
+                session.reset()
+                self.assertAlmostEqual(session.joints_payload()["controls"][0]["value"], 0.75)
+            finally:
+                session.close()
 
 
 if __name__ == "__main__":

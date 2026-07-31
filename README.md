@@ -106,6 +106,23 @@ simrig inspect-model path/to/robot.xml --save-report
 simrig view-model path/to/robot.xml --port 8766
 ```
 
+Open `http://127.0.0.1:8766/` to inspect the compiled model, orbit/zoom/pan the
+camera, and adjust named joints. The default `threejs` renderer sends MuJoCo's
+visual meshes and primitives to a GPU-accelerated WebGL scene, so camera motion
+stays smooth without streaming image frames from Python. If the MJCF defines a
+keyframe, the viewer starts from its first authored pose and **Reset Joints**
+restores it.
+
+The Three.js modules are pinned and loaded from jsDelivr, so the default viewer
+needs an internet connection when the page first loads. For an entirely local
+MuJoCo-rendered image stream, use:
+
+```bash
+simrig view-model path/to/robot.xml --render-mode mujoco --port 8766
+```
+
+Use `--render-mode topdown` only for the schematic debugging fallback.
+
 After defining the task, scaffold and validate an editable environment:
 
 ```bash

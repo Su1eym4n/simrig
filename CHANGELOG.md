@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-31
+
+- `simrig view-model` now defaults to a GPU-accelerated Three.js/WebGL viewer
+  with smooth orbit, zoom, pan, physically based materials, lighting, shadows,
+  and responsive browser rendering.
+- The browser model viewer serves compiled MuJoCo mesh and primitive geometry,
+  filters collision-only geometry from the default visual scene, and updates
+  geom transforms when joint controls change.
+- Model viewing starts from the first authored MJCF keyframe when one exists;
+  **Reset Joints** restores that pose.
+- `simrig view-model --render-mode mujoco` retains the streamed MuJoCo renderer,
+  and `--render-mode topdown` retains the schematic fallback.
 - `simrig eval` accepts reproducible `--seed` rollouts and fixed
   `--command` values for command-conditioned environments.
 - `simrig --version` reports the package version from one shared source.

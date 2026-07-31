@@ -214,7 +214,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.model_or_xml, "unitree_go1/scene.xml")
         self.assertEqual(args.port, 8766)
-        self.assertEqual(args.render_mode, "mujoco")
+        self.assertEqual(args.render_mode, "threejs")
 
 
 if __name__ == "__main__":

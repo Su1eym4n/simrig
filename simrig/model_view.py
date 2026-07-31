@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gzip
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -166,7 +167,7 @@ class ModelViewSession:
         menagerie: Path | str | None = None,
         width: int = 960,
         height: int = 540,
-        render_mode: str = "mujoco",
+        render_mode: str = "threejs",
         camera: str | int | None = None,
         fps: int = 24,
     ) -> None:
@@ -182,6 +183,14 @@ class ModelViewSession:
         self.ImageDraw = ImageDraw
         self.model = self.mujoco.MjModel.from_xml_path(str(self.model_path))
         self.data = self.mujoco.MjData(self.model)
+        self.initial_keyframe: str | None = None
+        if self.model.nkey:
+            self.mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
+            self.initial_keyframe = self.mujoco.mj_id2name(
+                self.model,
+                self.mujoco.mjtObj.mjOBJ_KEY,
+                0,
+            ) or "keyframe_0"
         self.mujoco.mj_forward(self.model, self.data)
         self._initial_qpos = np.array(self.data.qpos, copy=True)
 
@@ -191,31 +200,34 @@ class ModelViewSession:
         self.renderer_error: str | None = None
         self._lock = threading.Lock()
         self._last_frame_jpeg: bytes | None = None
+        self._scene_payload: dict[str, Any] | None = None
 
         self.renderer = None
-        if self.render_mode not in ("topdown", "mujoco"):
-            raise ValueError("render_mode must be 'topdown' or 'mujoco'.")
+        if self.render_mode not in ("threejs", "topdown", "mujoco"):
+            raise ValueError("render_mode must be 'threejs', 'mujoco', or 'topdown'.")
         self.camera, self.camera_state = make_tracking_camera(
             self.mujoco,
             self.model,
             self.data,
             camera,
         )
-        self._frame_pump = MujocoFramePump(
-            self.mujoco,
-            self.model,
-            self.data,
-            width=width,
-            height=height,
-            camera=self.camera,
-            camera_state=self.camera_state,
-            image_module=self.Image,
-            fps=fps,
-            render_mode=self.render_mode,
-            scene_lock=self._lock,
-            fallback_frame=self._fallback_frame,
-            error_frame=self._error_frame,
-        )
+        self._frame_pump: MujocoFramePump | None = None
+        if self.render_mode != "threejs":
+            self._frame_pump = MujocoFramePump(
+                self.mujoco,
+                self.model,
+                self.data,
+                width=width,
+                height=height,
+                camera=self.camera,
+                camera_state=self.camera_state,
+                image_module=self.Image,
+                fps=fps,
+                render_mode=self.render_mode,
+                scene_lock=self._lock,
+                fallback_frame=self._fallback_frame,
+                error_frame=self._error_frame,
+            )
 
     def reset(self) -> None:
         with self._lock:
@@ -259,22 +271,36 @@ class ModelViewSession:
             self.mujoco.mj_forward(self.model, self.data)
 
     def set_camera_from_query(self, query: dict[str, list[str]]) -> None:
-        self._frame_pump.set_camera_from_query(query)
+        if self._frame_pump is not None:
+            self._frame_pump.set_camera_from_query(query)
 
     def joints_payload(self) -> dict[str, Any]:
         acquired = self._lock.acquire(blocking=False)
         try:
             controls = joint_control_specs(self.mujoco, self.model, self.data)
-            pump_stats = self._frame_pump.stats()
+            pump_stats = (
+                self._frame_pump.stats()
+                if self._frame_pump is not None
+                else {
+                    "renderer_error": None,
+                    "fps_target": 60,
+                    "camera": {
+                        "interactive": True,
+                        "renderer": "threejs-orbit-controls",
+                    },
+                }
+            )
             return {
                 "model_name": self.model_path.parent.name or self.model_path.stem,
                 "model_path": str(self.model_path),
                 "joint_count": self.model.njnt,
                 "control_count": len(controls),
                 "render_mode": self.render_mode,
+                "initial_keyframe": self.initial_keyframe,
                 "renderer_error": pump_stats["renderer_error"],
                 "fps_target": pump_stats["fps_target"],
                 "camera": pump_stats["camera"],
+                "transforms": self.geom_transforms(),
                 "controls": [
                     {
                         "joint_id": control.joint_id,
@@ -294,11 +320,119 @@ class ModelViewSession:
             if acquired:
                 self._lock.release()
 
+    def scene_payload(self) -> dict[str, Any]:
+        """Return static render geometry plus the current world transforms."""
+
+        if self._scene_payload is None:
+            visible_geom_ids = [
+                geom_id
+                for geom_id in range(self.model.ngeom)
+                if int(self.model.geom_group[geom_id]) <= 2
+            ]
+            used_mesh_ids = sorted(
+                {
+                    int(self.model.geom_dataid[geom_id])
+                    for geom_id in visible_geom_ids
+                    if int(self.model.geom_type[geom_id])
+                    == int(self.mujoco.mjtGeom.mjGEOM_MESH)
+                    and int(self.model.geom_dataid[geom_id]) >= 0
+                }
+            )
+            meshes = [self._mesh_payload(mesh_id) for mesh_id in used_mesh_ids]
+            geoms = [self._geom_payload(geom_id) for geom_id in visible_geom_ids]
+            self._scene_payload = {
+                "model_name": self.model_path.parent.name or self.model_path.stem,
+                "coordinate_system": "z-up",
+                "meshes": meshes,
+                "geoms": geoms,
+            }
+        return {
+            **self._scene_payload,
+            "transforms": self.geom_transforms(),
+        }
+
+    def geom_transforms(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": geom_id,
+                "position": np.asarray(self.data.geom_xpos[geom_id], dtype=float).tolist(),
+                "matrix": np.asarray(self.data.geom_xmat[geom_id], dtype=float)
+                .reshape(-1)
+                .tolist(),
+            }
+            for geom_id in range(self.model.ngeom)
+        ]
+
+    def _mesh_payload(self, mesh_id: int) -> dict[str, Any]:
+        vert_adr = int(self.model.mesh_vertadr[mesh_id])
+        vert_num = int(self.model.mesh_vertnum[mesh_id])
+        face_adr = int(self.model.mesh_faceadr[mesh_id])
+        face_num = int(self.model.mesh_facenum[mesh_id])
+        name = self.mujoco.mj_id2name(
+            self.model,
+            self.mujoco.mjtObj.mjOBJ_MESH,
+            mesh_id,
+        )
+        return {
+            "id": mesh_id,
+            "name": name or f"mesh_{mesh_id}",
+            "vertices": np.asarray(
+                self.model.mesh_vert[vert_adr : vert_adr + vert_num],
+                dtype=np.float32,
+            )
+            .reshape(-1)
+            .tolist(),
+            "indices": np.asarray(
+                self.model.mesh_face[face_adr : face_adr + face_num],
+                dtype=np.uint32,
+            )
+            .reshape(-1)
+            .tolist(),
+        }
+
+    def _geom_payload(self, geom_id: int) -> dict[str, Any]:
+        material_id = int(self.model.geom_matid[geom_id])
+        if material_id >= 0:
+            rgba = np.asarray(self.model.mat_rgba[material_id], dtype=float)
+            specular = float(self.model.mat_specular[material_id])
+            shininess = float(self.model.mat_shininess[material_id])
+            reflectance = float(self.model.mat_reflectance[material_id])
+            emission = float(self.model.mat_emission[material_id])
+        else:
+            rgba = np.asarray(self.model.geom_rgba[geom_id], dtype=float)
+            specular = 0.25
+            shininess = 0.25
+            reflectance = 0.0
+            emission = 0.0
+        name = self.mujoco.mj_id2name(
+            self.model,
+            self.mujoco.mjtObj.mjOBJ_GEOM,
+            geom_id,
+        )
+        return {
+            "id": geom_id,
+            "name": name or f"geom_{geom_id}",
+            "type": int(self.model.geom_type[geom_id]),
+            "mesh_id": int(self.model.geom_dataid[geom_id]),
+            "group": int(self.model.geom_group[geom_id]),
+            "size": np.asarray(self.model.geom_size[geom_id], dtype=float).tolist(),
+            "rgba": rgba.tolist(),
+            "material": {
+                "specular": specular,
+                "shininess": shininess,
+                "reflectance": reflectance,
+                "emission": emission,
+            },
+        }
+
     def frame_jpeg(self) -> bytes:
+        if self._frame_pump is None:
+            raise RuntimeError("Frame streaming is disabled in threejs mode.")
         return self._frame_pump.get_jpeg()
 
     def close(self) -> None:
-        self._frame_pump.close()
+        if self._frame_pump is not None:
+            self._frame_pump.close()
 
     def _tracking_body_id(self) -> int:
         return tracking_body_id(self.mujoco, self.model, self.data)
@@ -384,7 +518,7 @@ def serve_model_view(
     port: int = 8766,
     width: int = 960,
     height: int = 540,
-    render_mode: str = "mujoco",
+    render_mode: str = "threejs",
     camera: str | int | None = None,
     fps: int = 24,
 ) -> None:
@@ -402,9 +536,14 @@ def serve_model_view(
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/":
-                self._send_html(_html())
+                self._send_html(_html(session.render_mode))
             elif parsed.path == "/frame.jpg":
-                self._send_bytes(session.frame_jpeg(), "image/jpeg")
+                if session.render_mode == "threejs":
+                    self.send_error(HTTPStatus.NOT_FOUND, "Frame streaming disabled")
+                else:
+                    self._send_bytes(session.frame_jpeg(), "image/jpeg")
+            elif parsed.path == "/scene.json":
+                self._send_json(session.scene_payload(), compress=True)
             elif parsed.path == "/joints.json":
                 self._send_json(session.joints_payload())
             elif parsed.path == "/camera":
@@ -430,16 +569,30 @@ def serve_model_view(
         def _send_html(self, body: str) -> None:
             self._send_bytes(body.encode("utf-8"), "text/html; charset=utf-8")
 
-        def _send_json(self, value: dict[str, Any]) -> None:
-            self._send_bytes(
-                json.dumps(value, indent=2).encode("utf-8"),
-                "application/json; charset=utf-8",
-            )
+        def _send_json(self, value: dict[str, Any], *, compress: bool = False) -> None:
+            body = json.dumps(value, separators=(",", ":")).encode("utf-8")
+            if compress and "gzip" in self.headers.get("Accept-Encoding", ""):
+                body = gzip.compress(body, compresslevel=5)
+                self._send_bytes(
+                    body,
+                    "application/json; charset=utf-8",
+                    content_encoding="gzip",
+                )
+                return
+            self._send_bytes(body, "application/json; charset=utf-8")
 
-        def _send_bytes(self, body: bytes, content_type: str) -> None:
+        def _send_bytes(
+            self,
+            body: bytes,
+            content_type: str,
+            *,
+            content_encoding: str | None = None,
+        ) -> None:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
+            if content_encoding is not None:
+                self.send_header("Content-Encoding", content_encoding)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -455,7 +608,335 @@ def serve_model_view(
         server.server_close()
 
 
-def _html() -> str:
+def _html(render_mode: str = "threejs") -> str:
+    if render_mode == "threejs":
+        return _threejs_html()
+    return _frame_html()
+
+
+def _threejs_html() -> str:
+    return (
+        """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SimRig Model View</title>
+  <style>"""
+        + viewer_styles(sidebar_width=360)
+        + """
+    #three-view { width: 100%; height: 100%; display: block; outline: none; }
+    #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #cbd5e1; background: #070b12; z-index: 2; }
+    #loading.error { color: #fca5a5; padding: 28px; text-align: center; white-space: pre-wrap; }
+  </style>
+  <script type="importmap">
+    {"imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+    }}
+  </script>
+</head>
+<body>
+  <main>
+    <div id="viewport">
+      <canvas id="three-view" aria-label="Interactive SimRig model"></canvas>
+      <div id="loading">Loading WebGL scene…</div>
+      <div id="hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+    </div>
+  </main>
+  <aside>
+    <h1>SimRig Model View</h1>
+    <div id="meta" class="meta">loading joints...</div>
+    <button class="secondary" id="reset-joints">Reset Joints</button>
+    <button class="secondary" id="reset-camera">Reset Camera</button>
+    <div id="controls"></div>
+    <h1 style="margin-top:18px">Status</h1>
+    <pre id="status">loading</pre>
+  </aside>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const canvas = document.getElementById('three-view');
+    const viewport = document.getElementById('viewport');
+    const loadingEl = document.getElementById('loading');
+    const statusEl = document.getElementById('status');
+    const metaEl = document.getElementById('meta');
+    const controlsEl = document.getElementById('controls');
+    const objects = new Map();
+    const meshGeometries = new Map();
+    let controlsRendered = false;
+
+    const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: false});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.setClearColor(0x0b1220, 1);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1220);
+    scene.fog = new THREE.Fog(0x0b1220, 7, 22);
+
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
+    camera.up.set(0, 0, 1);
+    const orbit = new OrbitControls(camera, canvas);
+    orbit.enableDamping = true;
+    orbit.dampingFactor = 0.075;
+    orbit.screenSpacePanning = false;
+    orbit.minDistance = 0.08;
+    orbit.maxDistance = 100;
+    orbit.minPolarAngle = 0.08;
+    orbit.maxPolarAngle = Math.PI / 2 - 0.04;
+
+    scene.add(new THREE.HemisphereLight(0xbfdcff, 0x172033, 1.15));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.35);
+    keyLight.position.set(4, -5, 8);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.camera.near = 0.1;
+    keyLight.shadow.camera.far = 30;
+    keyLight.shadow.camera.left = -5;
+    keyLight.shadow.camera.right = 5;
+    keyLight.shadow.camera.top = 5;
+    keyLight.shadow.camera.bottom = -5;
+    keyLight.shadow.bias = -0.0002;
+    scene.add(keyLight);
+    const rimLight = new THREE.DirectionalLight(0x7aa8ff, 0.85);
+    rimLight.position.set(-5, 3, 5);
+    scene.add(rimLight);
+
+    const modelRoot = new THREE.Group();
+    scene.add(modelRoot);
+
+    function materialFor(geom) {
+      const [r, g, b, a] = geom.rgba;
+      const props = geom.material || {};
+      if (geom.type === 0) {
+        return new THREE.MeshStandardMaterial({color: 0x182231, roughness: 0.92});
+      }
+      const material = new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color(r, g, b),
+        opacity: a,
+        transparent: a < 0.999,
+        roughness: THREE.MathUtils.clamp(0.68 - (props.shininess || 0) * 0.32, 0.22, 0.82),
+        metalness: THREE.MathUtils.clamp((props.reflectance || 0) * 0.45, 0, 0.35),
+        clearcoat: THREE.MathUtils.clamp((props.specular || 0) * 0.35, 0, 0.4),
+        clearcoatRoughness: 0.35,
+      });
+      if ((props.emission || 0) > 0) {
+        material.emissive.setRGB(r, g, b);
+        material.emissiveIntensity = props.emission;
+      }
+      return material;
+    }
+
+    function primitiveGeometry(geom) {
+      const [x, y, z] = geom.size;
+      switch (geom.type) {
+        case 0: // plane
+          return new THREE.PlaneGeometry(200, 200);
+        case 2: // sphere
+          return new THREE.SphereGeometry(x, 32, 20);
+        case 3: { // capsule, MuJoCo axis is local Z
+          const geometry = new THREE.CapsuleGeometry(x, 2 * y, 10, 24);
+          geometry.rotateX(Math.PI / 2);
+          return geometry;
+        }
+        case 4: { // ellipsoid
+          const geometry = new THREE.SphereGeometry(1, 32, 20);
+          geometry.scale(x, y, z);
+          return geometry;
+        }
+        case 5: { // cylinder, MuJoCo axis is local Z
+          const geometry = new THREE.CylinderGeometry(x, x, 2 * y, 32);
+          geometry.rotateX(Math.PI / 2);
+          return geometry;
+        }
+        case 6:
+          return new THREE.BoxGeometry(2 * x, 2 * y, 2 * z);
+        case 7:
+          return meshGeometries.get(geom.mesh_id) || null;
+        default:
+          return null;
+      }
+    }
+
+    function applyTransform(object, transform) {
+      if (!object || !transform) return;
+      object.position.fromArray(transform.position);
+      const m = transform.matrix;
+      const rotation = new THREE.Matrix4();
+      rotation.set(
+        m[0], m[1], m[2], 0,
+        m[3], m[4], m[5], 0,
+        m[6], m[7], m[8], 0,
+        0, 0, 0, 1,
+      );
+      object.quaternion.setFromRotationMatrix(rotation);
+    }
+
+    function updateTransforms(transforms) {
+      for (const transform of transforms || []) {
+        applyTransform(objects.get(transform.id), transform);
+      }
+    }
+
+    function fitCamera() {
+      const bounds = new THREE.Box3().setFromObject(modelRoot);
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3());
+      const radius = Math.max(size.x, size.y, size.z, 0.25);
+      orbit.target.copy(center);
+      camera.position.set(
+        center.x + radius * 1.35,
+        center.y - radius * 1.75,
+        center.z + radius * 0.95,
+      );
+      camera.near = Math.max(radius / 200, 0.002);
+      camera.far = Math.max(radius * 80, 100);
+      camera.updateProjectionMatrix();
+      orbit.update();
+    }
+
+    function resize() {
+      const width = Math.max(1, viewport.clientWidth);
+      const height = Math.max(1, viewport.clientHeight);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    }
+
+    function animate() {
+      orbit.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    async function loadScene() {
+      const res = await fetch('/scene.json', {cache: 'no-store'});
+      if (!res.ok) throw new Error(`scene request failed (${res.status})`);
+      const payload = await res.json();
+
+      for (const mesh of payload.meshes) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(mesh.vertices, 3));
+        geometry.setIndex(mesh.indices);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingSphere();
+        meshGeometries.set(mesh.id, geometry);
+      }
+
+      const transformById = new Map(payload.transforms.map(item => [item.id, item]));
+      for (const geom of payload.geoms) {
+        const geometry = primitiveGeometry(geom);
+        if (!geometry || geom.rgba[3] <= 0.001) continue;
+        const object = new THREE.Mesh(geometry, materialFor(geom));
+        object.name = geom.name;
+        object.castShadow = geom.type !== 0;
+        object.receiveShadow = true;
+        applyTransform(object, transformById.get(geom.id));
+        if (geom.type === 0) {
+          scene.add(object);
+        } else {
+          modelRoot.add(object);
+        }
+        objects.set(geom.id, object);
+      }
+
+      const grid = new THREE.GridHelper(30, 60, 0x52647a, 0x263346);
+      grid.rotation.x = Math.PI / 2;
+      grid.position.z = 0.001;
+      grid.material.opacity = 0.42;
+      grid.material.transparent = true;
+      scene.add(grid);
+
+      fitCamera();
+      loadingEl.remove();
+    }
+
+    function statusPayload(payload) {
+      const copy = {...payload};
+      delete copy.transforms;
+      return copy;
+    }
+
+    function renderControls(payload) {
+      metaEl.textContent = `${payload.model_name} | ${payload.joint_count} joints | ${payload.control_count} controls | mode: ${payload.render_mode} | fps: display`;
+      updateTransforms(payload.transforms);
+      if (!controlsRendered) {
+        controlsEl.innerHTML = '';
+        for (const control of payload.controls) {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'control';
+          const label = document.createElement('label');
+          label.textContent = control.label;
+          const slider = document.createElement('input');
+          slider.type = 'range';
+          slider.min = control.min;
+          slider.max = control.max;
+          slider.step = Math.max((control.max - control.min) / 300, 0.000001);
+          slider.value = control.value;
+          slider.dataset.jointId = control.joint_id;
+          slider.dataset.component = control.component;
+          const valueEl = document.createElement('div');
+          valueEl.className = 'value';
+          valueEl.textContent = control.value.toFixed(4);
+          slider.addEventListener('input', () => {
+            valueEl.textContent = Number(slider.value).toFixed(4);
+          });
+          slider.addEventListener('change', async () => {
+            await setJoint(control.joint_id, control.component, slider.value);
+          });
+          wrapper.append(label, slider, valueEl);
+          controlsEl.appendChild(wrapper);
+        }
+        controlsRendered = true;
+      }
+      statusEl.textContent = JSON.stringify(statusPayload(payload), null, 2);
+    }
+
+    async function loadJoints() {
+      const res = await fetch('/joints.json', {cache: 'no-store'});
+      renderControls(await res.json());
+    }
+
+    async function setJoint(jointId, component, value) {
+      const res = await fetch(`/set?joint_id=${jointId}&component=${component}&value=${value}`, {cache: 'no-store'});
+      renderControls(await res.json());
+    }
+
+    async function resetJoints() {
+      const res = await fetch('/reset', {cache: 'no-store'});
+      const payload = await res.json();
+      controlsRendered = false;
+      renderControls(payload);
+    }
+
+    document.getElementById('reset-joints').addEventListener('click', resetJoints);
+    document.getElementById('reset-camera').addEventListener('click', fitCamera);
+    window.addEventListener('resize', resize);
+    resize();
+    animate();
+    try {
+      await Promise.all([loadScene(), loadJoints()]);
+      setInterval(loadJoints, 2000);
+    } catch (err) {
+      loadingEl.className = 'error';
+      loadingEl.textContent = `WebGL viewer failed to load.\n${err}\n\nThree.js is loaded from jsDelivr, so an internet connection is required.`;
+      statusEl.textContent = String(err);
+      console.error(err);
+    }
+  </script>
+</body>
+</html>
+"""
+    )
+
+
+def _frame_html() -> str:
     return f"""<!doctype html>
 <html>
 <head>

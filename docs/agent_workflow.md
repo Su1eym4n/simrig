@@ -59,7 +59,19 @@ Use this workflow when guiding a user with SimRig.
    - stepped: native MuJoCo simulation survived a short bounded-control rollout
    - trainable: only true when there is a real env/task
 
-3. Check whether a Playground env already covers the robot/task before scaffolding.
+3. Open the model viewer:
+
+   ```bash
+   simrig view-model MODEL_OR_XML --port 8766
+   ```
+
+   The default Three.js/WebGL view renders visual geometry in the browser and
+   provides orbit, zoom, pan, named joint controls, and authored-keyframe reset.
+   It loads pinned Three.js modules from jsDelivr. Use `--render-mode mujoco`
+   for the local streamed renderer or `--render-mode topdown` for a schematic
+   fallback.
+
+4. Check whether a Playground env already covers the robot/task before scaffolding.
 
 ## Custom Env Module
 

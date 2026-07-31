@@ -62,7 +62,12 @@ simrig view-model MODEL_OR_XML --port 8766
 
 Report compilation and bounded-step results separately. Neither proves the
 model is trainable. Use the browser URL `http://127.0.0.1:8766/` to review
-joints, geometry, and the default pose.
+joints, visual geometry, and the authored pose. `view-model` defaults to a
+Three.js/WebGL scene with browser-local orbit, zoom, and pan controls. It loads
+pinned Three.js modules from jsDelivr. Use `--render-mode mujoco` for the local
+streamed renderer or `--render-mode topdown` for the schematic fallback. When
+the MJCF contains keyframes, the viewer starts from the first one and Reset
+Joints restores it.
 
 For a known environment, run:
 
