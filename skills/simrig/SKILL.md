@@ -20,6 +20,7 @@ Classify the input before acting:
 | Custom environment path ending in `.py` | Validate environment |
 | `policy.params` or `hf://...` checkpoint | Evaluate, then preview |
 | “Show this robot” | View model only |
+| Running MuJoCo Python controller | Add `LiveWebViewer` around its existing loop |
 | “Train this robot to …” | Define the task, then use an existing or custom environment |
 | Custom terrain, props, targets, or contacts | Custom scene plus custom environment |
 
@@ -68,6 +69,11 @@ pinned Three.js modules from jsDelivr. Use `--render-mode mujoco` for the local
 streamed renderer or `--render-mode topdown` for the schematic fallback. When
 the MJCF contains keyframes, the viewer starts from the first one and Reset
 Joints restores it.
+
+For an ordinary Python controller that already owns its `MjModel`, `MjData`,
+controls, and stepping, use `simrig.LiveWebViewer` inside that script. Share
+the viewer's lock around MuJoCo state mutations and call `sync()` after each
+completed step. Do not precompute or replay a trajectory just to visualize it.
 
 For a known environment, run:
 

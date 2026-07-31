@@ -74,6 +74,17 @@ Use this workflow when guiding a user with SimRig.
 
 4. Check whether a Playground env already covers the robot/task before scaffolding.
 
+## Standalone MuJoCo Script
+
+When an ordinary Python controller already owns an `MjModel`, `MjData`, and
+simulation loop, use `simrig.LiveWebViewer` to expose that live state in the
+browser. Do not convert the controller into a policy preview or precompute a
+trajectory just for visualization.
+
+Guard mutations with `viewer.lock`, call `viewer.sync()` after completed steps,
+and optionally select a named `tracking_body` for a browser-side path trail.
+The script remains responsible for stepping and real-time pacing.
+
 ## Custom Env Module
 
 Use this path when no Playground env fits and the user wants a custom task.

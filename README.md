@@ -123,6 +123,32 @@ simrig view-model path/to/robot.xml --render-mode mujoco --port 8766
 
 Use `--render-mode topdown` only for the schematic debugging fallback.
 
+### View a running MuJoCo script
+
+Standalone controllers can publish the `MjModel` and `MjData` they already own
+to the same Three.js viewer. SimRig does not step, pause, or replay the script:
+
+```python
+from simrig import LiveWebViewer
+
+with LiveWebViewer(
+    model,
+    data,
+    name="my controller",
+    tracking_body="end_effector",
+) as web:
+    while running:
+        with web.lock:
+            data.ctrl[:] = controller(data)
+            mujoco.mj_step(model, data)
+            web.sync(phase="moving")
+```
+
+Open the printed `http://127.0.0.1:8767/` URL. The page receives lightweight
+geom transforms while the Python script retains full control of simulation
+timing and state. A named `tracking_body` also draws its live path. Use
+`wait_for_client()` when motion should begin only after the page is ready.
+
 After defining the task, scaffold and validate an editable environment:
 
 ```bash

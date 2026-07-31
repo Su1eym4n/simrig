@@ -41,6 +41,7 @@ __all__ = [
     "is_env_module_path",
     "list_envs",
     "list_models",
+    "LiveWebViewer",
     "load_custom_env",
     "load_env",
     "new_env",
@@ -54,6 +55,10 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     """Lazy-load browser helpers so core imports work without numpy/mujoco."""
+    if name == "LiveWebViewer":
+        from simrig.live_view import LiveWebViewer
+
+        return LiveWebViewer
     if name == "serve_model_view":
         from simrig.model_view import serve_model_view
 

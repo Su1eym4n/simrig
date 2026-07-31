@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `LiveWebViewer` lets ordinary MuJoCo Python scripts publish their existing
+  `MjModel`/`MjData` state to the interactive Three.js viewer without handing
+  control or simulation stepping to SimRig.
+- Live script viewers can track a named body and draw its browser-side path.
+
 ## 0.2.1 - 2026-07-31
 
 - `simrig preview` now uses the Three.js/WebGL renderer by default, with a
