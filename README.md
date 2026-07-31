@@ -1,147 +1,37 @@
 # SimRig
 
-SimRig is the agent- and human-friendly way to inspect, smoke-test, train, eval,
-and preview MuJoCo Playground policies.
+Turn MuJoCo robots into trained policies with agent-guided task design, PPO
+training, evaluation, and interactive previews.
 
-It is deliberately honest about the line between a robot model and a trainable
-task:
+SimRig combines:
 
-- A MuJoCo or Menagerie model can be inspected, compiled, and stepped.
-- A trainable environment must also define reset logic, observations, actions,
-  rewards, and termination.
-- Existing MuJoCo Playground environments are the first-class trainable path in
-  v0.1.
+- a Python CLI that inspects models, runs MuJoCo Playground environments,
+  trains Brax PPO policies, evaluates checkpoints, and serves previews;
+- an agent skill that teaches Codex, Claude Code, and Cursor how to use that
+  pipeline safely.
 
-## Ten-minute quickstart
+Raw robot XML is not automatically a training task. SimRig helps the agent move
+from a model and a requested behavior to explicit observations, actions,
+rewards, resets, termination conditions, validation, training, and evaluation.
 
-Install the Playground training stack, then run a short smoke training loop:
+## What SimRig can do
 
-```bash
-python -m pip install -e ".[playground]"
+| Goal | SimRig workflow |
+|---|---|
+| Train a known Playground robot | Inspect the environment, smoke-test it, train, evaluate, and preview |
+| Use a custom MJCF/XML robot | Inspect the model, define the task, create an editable environment, then validate and train |
+| Build locomotion or posture behaviors | Design command tracking, contacts, rewards, failures, and evaluation scenarios |
+| Build custom scenes | Add terrain, props, targets, sensors, cameras, or contact rules in ordinary MJCF and Python |
+| Evaluate an existing policy | Run reproducible headless rollouts and open a browser or native MuJoCo preview |
 
-simrig list-envs --backend mujoco-playground
-simrig inspect-env Go1JoystickFlatTerrain
-simrig smoke Go1JoystickFlatTerrain --steps 10
-simrig train Go1JoystickFlatTerrain --preset smoke
-```
+SimRig v0 uses MuJoCo and MuJoCo Playground. Isaac Lab is not currently a
+supported backend.
 
-Evaluate and open a browser preview of the saved policy (path will match your
-`runs/` output):
+## Installation
 
-```bash
-simrig eval runs/<run-dir>/policy.params \
-  --env Go1JoystickFlatTerrain \
-  --seed 0 \
-  --command 0.5 0.0 0.0
-simrig preview runs/<run-dir>/policy.params \
-  --env Go1JoystickFlatTerrain \
-  --command 0.5 0.0 0.0 \
-  --port 8765
-```
+SimRig requires Python 3.10 or newer.
 
-Open `http://127.0.0.1:8765/`. Drag to orbit and scroll to zoom.
-
-`G1JoystickFlatTerrain` works the same way if you prefer Unitree G1.
-
-Use `smoke` before `local` or `cloud`. Longer presets need more compute.
-
-## Test a fresh clone
-
-SimRig requires Python 3.10 or newer. Check the interpreter explicitly—some
-macOS installations still provide Python 3.9 as `python3`.
-
-```bash
-git clone https://github.com/Su1eym4n/simrig.git
-cd simrig
-
-python3.12 -m venv .venv  # Python 3.10, 3.11, or 3.12
-source .venv/bin/activate
-python --version
-python -m pip install --upgrade pip
-```
-
-For a lightweight contributor check:
-
-```bash
-python -m pip install -e ".[dev]"
-simrig --version
-python -m pytest
-```
-
-For the complete MuJoCo Playground path:
-
-```bash
-python -m pip install -e ".[dev,playground]"
-python -m pip check
-simrig validate-env examples/demo_reach.py --runtime
-simrig smoke examples/demo_reach.py --steps 10
-simrig train examples/demo_reach.py --preset smoke
-simrig eval runs/<run-dir>/policy.params \
-  --env examples/demo_reach.py \
-  --steps 50 \
-  --seed 0
-```
-
-Replace `<run-dir>` with the directory printed by `simrig train`. Smoke training
-runs a small real PPO job and is intentionally more expensive than the tests
-and 10-step environment smoke check.
-
-When the cloned folder is opened as a Codex workspace, Codex discovers the
-repository skill through `.agents/skills/simrig`. Start a new task and ask:
-
-> Use $simrig to inspect and smoke-test the demo reach environment.
-
-## Install
-
-For local package development:
-
-```bash
-python -m pip install -e .
-```
-
-For model inspection only:
-
-```bash
-python -m pip install -e ".[mujoco]"
-```
-
-For Playground training/eval:
-
-```bash
-python -m pip install -e ".[playground]"
-```
-
-For policies stored on Hugging Face Hub:
-
-```bash
-python -m pip install -e ".[hf]"
-```
-
-Dev extras (tests):
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-## For coding agents
-
-Prefer browser commands (`preview`, `view-model`) over the native desktop
-viewer (`demo`). Agents can launch a localhost URL, read `/status.json` or
-`/joints.json`, and you can inspect the render in a normal browser tab.
-
-Follow:
-
-- [AGENTS.md](AGENTS.md) — safety rules and command preferences
-- [docs/agent_workflow.md](docs/agent_workflow.md) — step-by-step agent workflow
-- [skills/simrig/SKILL.md](skills/simrig/SKILL.md) — portable skill for Claude Code / Codex / Cursor
-
-### Install the skill globally (any folder)
-
-Anyone can use SimRig with Claude Code / Codex / Cursor **without** opening this
-repo. Full steps: [skills/README.md](skills/README.md).
-
-Before SimRig is published to PyPI, clone it into a permanent location and
-install both the CLI and the skill:
+Until the package is published to PyPI, install it from GitHub:
 
 ```bash
 git clone https://github.com/Su1eym4n/simrig.git
@@ -150,129 +40,120 @@ cd simrig
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,playground]"
-python -m pip check
+python -m pip install -e ".[playground]"
 
-mkdir -p ~/.agents/skills
-cp -R skills/simrig ~/.agents/skills/simrig   # Codex
-
-mkdir -p ~/.claude/skills
-cp -R skills/simrig ~/.claude/skills/simrig   # Claude Code
-
-mkdir -p ~/.cursor/skills
-cp -R skills/simrig ~/.cursor/skills/simrig   # Cursor
-```
-
-The editable CLI installation remains connected to that clone. Before using
-SimRig from another folder, activate its environment:
-
-```bash
-source /path/to/simrig/.venv/bin/activate
-cd /path/to/your/robot-project
 simrig --version
 ```
 
-Restart the agent session, then ask it to “use the simrig skill”. After the
-one-time skill copy, the agent workflow is available from any folder.
-
-## Model inspection
+The editable installation remains connected to the clone. Activate its virtual
+environment before using SimRig from another terminal or project:
 
 ```bash
-simrig init
-simrig list-models --menagerie ~/path/to/mujoco_menagerie
-simrig inspect-model unitree_g1 --save-report
-simrig view-model unitree_go1 --menagerie ~/path/to/mujoco_menagerie
+source /path/to/simrig/.venv/bin/activate
 ```
 
-Use `MUJOCO_MENAGERIE_PATH` or `--menagerie` to point SimRig at a Menagerie
-checkout. Compilation and short stepping do **not** mean a model is trainable.
+Development dependencies, tests, and contribution checks are documented in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Demo and Hugging Face policies
+## Install the agent skill
 
-Native desktop MuJoCo viewer (humans):
+Inside this repository, Codex discovers the SimRig skill automatically through
+`.agents/skills/simrig`.
+
+To make the skill available from any project, install it globally with the
+Skills CLI:
 
 ```bash
-simrig demo /path/to/policy.params \
+npx skills add Su1eym4n/simrig --skill simrig --global
+```
+
+The installer supports Codex, Claude Code, Cursor, and other agents. Restart the
+agent after installation. See
+[Agent skill installation](docs/skill-installation.md) for provider-specific
+commands, manual installation, and troubleshooting.
+
+## Use SimRig
+
+Open a project containing a MuJoCo robot or scene and ask the agent naturally:
+
+> Train this MuJoCo robot to walk forward.
+
+> Create a crouching task for this robot, smoke-test it, and start a small
+> training run.
+
+> Evaluate this checkpoint across five seeds and preview the policy.
+
+You can invoke the workflow explicitly with `$simrig`, but the skill can also
+activate automatically when the request matches its description.
+
+### Existing Playground environment
+
+```bash
+simrig list-envs --backend mujoco-playground
+simrig inspect-env Go1JoystickFlatTerrain
+simrig smoke Go1JoystickFlatTerrain --steps 10
+simrig train Go1JoystickFlatTerrain --preset smoke
+```
+
+Use the `smoke` preset before a longer `local` or `cloud` configuration.
+
+### Custom robot or scene
+
+Inspect the model before designing a task:
+
+```bash
+simrig inspect-model path/to/robot.xml --save-report
+simrig view-model path/to/robot.xml --port 8766
+```
+
+After defining the task, scaffold and validate an editable environment:
+
+```bash
+simrig new-env my_task --model path/to/scene.xml --template mjx
+simrig validate-env envs/my_task.py
+simrig validate-env envs/my_task.py --runtime
+simrig smoke envs/my_task.py --steps 10
+simrig train envs/my_task.py --preset smoke
+```
+
+The generated environment is a starter, not an invented task definition. The
+reward, observations, actions, resets, and termination logic remain explicit
+and editable in Python.
+
+### Evaluate and preview
+
+```bash
+simrig eval runs/<run-dir>/policy.params \
   --env Go1JoystickFlatTerrain \
-  --command 0.0 0.0 0.0
-```
+  --steps 500 \
+  --seed 0 \
+  --command 0.5 0.0 0.0
 
-`--command` applies only for envs that expose command-like state (joystick
-locomotion). Not every Playground task has a high-level command.
-
-Headless evaluation accepts `--seed` for reproducible rollouts and `--command`
-for fixed-command tasks:
-
-```bash
-simrig eval /path/to/policy.params \
+simrig preview runs/<run-dir>/policy.params \
   --env Go1JoystickFlatTerrain \
-  --seed 4 \
-  --command 0.8 0.0 0.0
+  --command 0.5 0.0 0.0 \
+  --port 8765
 ```
 
-SimRig fails clearly if `--command` is used with an environment that does not
-expose command-like state. Run multiple seeds separately when reporting task
-performance.
+Open `http://127.0.0.1:8765/` to orbit, zoom, and inspect the rollout.
 
-Load policies from Hugging Face with `hf://owner/repo/path`:
+## Documentation
 
-```bash
-simrig eval hf://my-org/go1-policy/policy.params \
-  --env Go1JoystickFlatTerrain
-```
-
-Private repos: `huggingface-cli login`, `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN`,
-or `--hf-token`. Pin with `--hf-revision`.
-
-Browser preview defaults to `--render-mode mujoco`. Use `--render-mode topdown`
-only for the lightweight schematic debug view.
-
-## Custom environments
-
-Raw Menagerie models are not automatically trainable. Scaffold a module, fill in
-the task logic, then smoke/train with the **`.py` path**:
-
-```bash
-simrig inspect-model path/to/scene.xml
-simrig new-env my_robot_reach --model path/to/scene.xml --template mjx
-simrig validate-env envs/my_robot_reach.py
-simrig validate-env envs/my_robot_reach.py --runtime
-simrig smoke envs/my_robot_reach.py --steps 10
-simrig train envs/my_robot_reach.py --preset smoke
-```
-
-The generated file is an editable starter. You still need to define reset,
-observations, rewards, termination, and action mapping. Prefer observation keys
-`state` and `privileged_state` for SimRig's PPO defaults.
-
-- `validate-env` (static): structure checklist only
-- `validate-env --runtime`: import + construct + reset/step when JAX is available
-- Passing static validation does **not** mean the env is trainable
-
-### Test-drive example
-
-A tiny 2-DOF arm + reach task lives under [`examples/`](examples/) so you can
-exercise the custom-env CLI without bringing your own model:
-
-```bash
-pip install -e ".[playground]"
-simrig validate-env examples/demo_reach.py --runtime
-simrig smoke examples/demo_reach.py --steps 10
-simrig train examples/demo_reach.py --preset smoke
-```
-
-See [`examples/README.md`](examples/README.md).
+- [Examples](examples/README.md)
+- [Agent workflow](docs/agent_workflow.md)
+- [Agent skill installation](docs/skill-installation.md)
+- [Contributing](CONTRIBUTING.md)
+- [SimRig skill source](skills/simrig/SKILL.md)
 
 ## Outputs
 
-SimRig writes local project artifacts by default:
+SimRig writes project-local artifacts:
 
-- `reports/` for model/env/eval reports
-- `runs/` for training run configs, checkpoints, and policy params
-- `artifacts/` for user-managed outputs
-- `envs/` for editable custom env templates
-- `configs/` for user-managed configs
+- `reports/` — model, environment, and evaluation reports
+- `runs/` — training configuration, metrics, checkpoints, and policy parameters
+- `envs/` — editable custom environment modules
+- `artifacts/` and `configs/` — user-managed outputs and configuration
 
-## Contributing
+## License
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). License: [MIT](LICENSE).
+[MIT](LICENSE)
