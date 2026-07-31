@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simrig"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Agent- and human-friendly workflows for MuJoCo Playground training and evaluation."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "SimRig contributors" }]
 dependencies = []
 
@@ -22,13 +23,16 @@ playground = [
   "brax",
   "playground",
 ]
-dev = ["pytest"]
+dev = ["build", "pytest", "twine"]
 
 [project.scripts]
 simrig = "simrig.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["simrig*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "simrig._version.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

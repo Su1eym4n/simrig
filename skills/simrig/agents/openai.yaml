@@ -1,0 +1,4 @@
+interface:
+  display_name: "SimRig Robot Training"
+  short_description: "Train and evaluate MuJoCo robot policies"
+  default_prompt: "Use $simrig to turn my MuJoCo robot and task into a validated training and evaluation pipeline."

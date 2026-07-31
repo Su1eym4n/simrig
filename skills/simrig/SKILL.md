@@ -1,125 +1,212 @@
 ---
 name: simrig
-description: >-
-  Train, evaluate, and preview MuJoCo / MuJoCo Playground robot policies with the
-  SimRig CLI. Use when the user wants to train a robot, write a custom RL env,
-  smoke-test simulation, eval/preview a Brax policy, inspect Menagerie/MJCF
-  models, see how a robot looks, or run Physical AI locomotion/manipulation
-  workflows with an agent.
-metadata:
-  short-description: MuJoCo Playground train/eval via SimRig CLI
+description: Train, evaluate, and visualize MuJoCo and MuJoCo Playground robots with the SimRig CLI. Use for arbitrary MJCF/XML or Menagerie robots, existing Playground tasks, custom locomotion or manipulation tasks, crouching, jumping, reaching, custom MuJoCo scenes, editable MJX environment modules, Brax PPO training, checkpoint evaluation, browser previews, and native MuJoCo demos.
 ---
 
 # SimRig
 
-Drive the `simrig` CLI. Do **not** re-implement viewers, trainers, or mesh
-hunts by hand. Prefer one clear command, then report the URL or error.
+Use `simrig` as the control plane for model inspection, environment validation,
+PPO training, evaluation, and visualization. Edit ordinary MJCF and Python when
+a task or scene is custom; do not replace SimRig's runners or viewers.
 
-## Prerequisites (30 seconds)
+## Establish the artifact and intent
+
+Classify the input before acting:
+
+| Input or request | Route |
+|---|---|
+| Playground environment name | Existing environment |
+| Raw `.xml`, MJCF, or Menagerie robot | Inspect model, then match or build a task |
+| Custom environment path ending in `.py` | Validate environment |
+| `policy.params` or `hf://...` checkpoint | Evaluate, then preview |
+| “Show this robot” | View model only |
+| “Train this robot to …” | Define the task, then use an existing or custom environment |
+| Custom terrain, props, targets, or contacts | Custom scene plus custom environment |
+
+Do not treat a robot model as a task. A trainable task also requires action
+mapping, observations, reset distribution, rewards, termination, and measurable
+success criteria.
+
+## Check the installation
+
+Run:
 
 ```bash
-command -v simrig || python -m pip install -e ".[playground]"  # or pip install simrig[playground]
+command -v simrig
 simrig --help
 ```
 
-Menagerie (needed to **look at** Go1/G1 meshes):
+When working in the SimRig source repository and the command is unavailable,
+install the relevant extra:
 
 ```bash
-echo "${MUJOCO_MENAGERIE_PATH:-}"
-# common: ~/Desktop/mujoco_menagerie  or  ~/mujoco_menagerie
+python3 -m pip install -e ".[mujoco]"       # inspect and view models
+python3 -m pip install -e ".[playground]"   # validate, train, eval, preview
+python3 -m pip install -e ".[hf]"           # resolve hf:// checkpoints
 ```
 
-If Menagerie is missing, **ask the user for the path or to clone it**. Do **not**
-recursively search the home directory for STL files.
+Request approval before installing dependencies. Resolve Menagerie with
+`MUJOCO_MENAGERIE_PATH` or `--menagerie`; never recursively search a home
+directory for meshes.
 
-```bash
-# user can clone once:
-git clone https://github.com/google-deepmind/mujoco_menagerie.git ~/Desktop/mujoco_menagerie
-export MUJOCO_MENAGERIE_PATH=~/Desktop/mujoco_menagerie
-```
+## Follow the training pipeline
 
-## Intent router (pick ONE path)
+### 1. Inspect before designing
 
-| User intent | Do this |
-|-------------|---------|
-| “Show me / look at G1/Go1” | **View model** (below) — not train, not inspect-env rabbit holes |
-| “Train / walk / smoke” | Playground env workflow |
-| “New skill / jump / reach” | Custom env workflow |
-| “Try my policy” | `eval` then `preview` |
-
-### View model (see the robot) — default for “how does it look”
-
-```bash
-# resolve menagerie once
-MEN=${MUJOCO_MENAGERIE_PATH:-$HOME/Desktop/mujoco_menagerie}
-test -d "$MEN/unitree_g1" || MEN=$HOME/mujoco_menagerie
-
-simrig view-model unitree_g1 --menagerie "$MEN" --port 8766
-# tell user: open http://127.0.0.1:8766/
-```
-
-Aliases: `unitree_go1`, or a path to `scene.xml`.
-
-**Anti-patterns (do not do these for “look at G1”):**
-- Do not start from `G1JoystickFlatTerrain` XML inside site-packages and chase broken mesh URIs.
-- Do not `find` / search the whole home folder for meshes.
-- Do not train or scaffold an env just to visualize.
-- If meshes are missing: stop and ask for `MUJOCO_MENAGERIE_PATH` / clone Menagerie.
-
-### Policy preview (see a trained policy move)
-
-```bash
-simrig preview PATH/TO/policy.params --env G1JoystickFlatTerrain --command 0.5 0 0 --port 8765
-# open http://127.0.0.1:8765/
-```
-
-Needs a real policy file. Without one, use `view-model` instead.
-
-## Hard rules
-
-- Compiling XML ≠ trainable.
-- Prefer existing Playground envs when they fit.
-- Do not invent rewards from task names.
-- `smoke` before long train; `--preset smoke` before `local`/`cloud`.
-- Prefer `preview` / `view-model` over native `demo`.
-- Custom tasks = `*.py` module + `simrig`, not one-off scripts.
-- Fail fast with a clear ask to the user; do not wander the filesystem.
-
-## Workflow A — Playground train
-
-```bash
-simrig list-envs --backend mujoco-playground
-simrig inspect-env G1JoystickFlatTerrain
-simrig smoke G1JoystickFlatTerrain --steps 10
-simrig train G1JoystickFlatTerrain --preset smoke
-simrig eval runs/.../policy.params --env G1JoystickFlatTerrain
-simrig preview runs/.../policy.params --env G1JoystickFlatTerrain --command 0.5 0 0 --port 8765
-```
-
-## Workflow B — custom task
+For raw models, run:
 
 ```bash
 simrig inspect-model MODEL_OR_XML --save-report
-simrig new-env TASK_NAME --model MODEL_OR_XML --template mjx
-# edit SECTION blocks
-simrig validate-env PATH.py --runtime
-simrig smoke PATH.py --steps 10
-simrig train PATH.py --preset smoke
+simrig view-model MODEL_OR_XML --port 8766
 ```
 
-Obs keys: prefer `state` + `privileged_state`. Keep metrics keys stable (include `reward`).
+Report compilation and bounded-step results separately. Neither proves the
+model is trainable. Use the browser URL `http://127.0.0.1:8766/` to review
+joints, geometry, and the default pose.
 
-## Commands
+For a known environment, run:
 
-| Intent | Command |
-|--------|---------|
-| **See robot** | `simrig view-model unitree_g1 --menagerie $MEN --port 8766` |
-| List envs | `simrig list-envs --backend mujoco-playground` |
-| Inspect env | `simrig inspect-env NAME` |
-| Inspect model | `simrig inspect-model MODEL --save-report` |
-| Scaffold | `simrig new-env NAME --model XML` |
-| Validate | `simrig validate-env PATH.py [--runtime]` |
-| Smoke | `simrig smoke NAME_OR_PATH.py --steps 10` |
-| Train | `simrig train NAME_OR_PATH.py --preset smoke` |
-| Eval | `simrig eval POLICY --env NAME` |
-| Policy preview | `simrig preview POLICY --env NAME --port 8765` |
+```bash
+simrig inspect-env ENV_NAME --save-report
+```
+
+### 2. Define a testable task
+
+Translate the user's request into a short task contract before authoring reward
+logic. Specify:
+
+- desired behavior and command or target distribution;
+- initial-state and scene randomization;
+- allowed contacts and failure conditions;
+- episode horizon;
+- measurable evaluation scenarios and pass criteria.
+
+Ask one focused question only when a missing choice materially changes the
+task. Continue safe inspection while waiting. Do not invent task semantics from
+the robot or task name. Read [task-design.md](references/task-design.md) for
+locomotion, posture, jumping, manipulation, and scene-specific decisions.
+
+### 3. Prefer an existing Playground task
+
+Check available environments before writing a custom one:
+
+```bash
+simrig list-envs --backend mujoco-playground
+simrig inspect-env ENV_NAME
+simrig smoke ENV_NAME --steps 10
+simrig train ENV_NAME --preset smoke
+```
+
+Use an existing environment only when its robot, task semantics, actions, and
+scene match the contract. Do not choose one solely because the robot name
+matches. Distinguish training over a command distribution from training only at
+one requested command.
+
+### 4. Build a custom scene or task
+
+Create or edit a dedicated scene XML when the task needs terrain, targets,
+objects, obstacles, contact pairs, sensors, cameras, or task-specific
+keyframes. Preserve relative includes and mesh paths. Inspect and view the
+result before implementing the environment.
+
+Scaffold only after the task contract is known:
+
+```bash
+simrig new-env TASK_NAME --model path/to/scene.xml --template mjx
+```
+
+Fill every `SECTION:` block in the generated module. Keep reward terms and task
+assumptions readable in Python. Prefer observations with `state` and
+`privileged_state`, and keep metric names stable, including `reward`. Read
+[custom-environments.md](references/custom-environments.md) before editing a
+custom module.
+
+### 5. Validate in increasing order of cost
+
+Run every gate and stop at the first failure:
+
+```bash
+simrig validate-env envs/TASK_NAME.py
+simrig validate-env envs/TASK_NAME.py --runtime
+simrig smoke envs/TASK_NAME.py --steps 10
+simrig train envs/TASK_NAME.py --preset smoke
+```
+
+Treat static validation as a structure check only. Treat runtime validation as
+one reset/step compatibility check. Treat smoke training as pipeline evidence,
+not proof that the behavior is learned.
+
+Inspect state dimensions, finite values, action scaling, reward components,
+termination frequency, contacts, and reset diversity before spending on a
+longer run.
+
+### 6. Scale training deliberately
+
+Use `smoke` first. Use `local` only after smoke training produces a checkpoint
+and sane metrics:
+
+```bash
+simrig train ENV_OR_PATH --preset local
+```
+
+Treat `cloud` as a large configuration, not as a remote job launcher. Do not run
+it without an explicit compute destination and user approval. Use
+`--timesteps`, `--num-envs`, and `--batch-size` for intentional overrides.
+Record the exact run directory and preserve its `config.json`,
+`final_metrics.json`, checkpoints, and `policy.params`.
+
+### 7. Evaluate behavior, not only reward
+
+Run headless evaluation first:
+
+```bash
+simrig eval runs/RUN/policy.params \
+  --env ENV_OR_PATH \
+  --steps 500 \
+  --seed 0
+```
+
+Then preview the same checkpoint and environment:
+
+```bash
+simrig preview runs/RUN/policy.params --env ENV_OR_PATH --port 8765
+```
+
+Use `--command X Y YAW` with `eval` and `preview` only for environments that
+expose command-like state. Repeat headless evaluation with distinct `--seed`
+values when the task contract requires multiple trials. Open
+`http://127.0.0.1:8765/`. Prefer `preview` for agent-visible review; use `demo`
+only when the user explicitly wants the native desktop viewer.
+
+Evaluate across multiple seeds and the scenarios from the task contract.
+Compare success rate and task-specific metrics, not just total reward. Read
+[evaluation-and-operations.md](references/evaluation-and-operations.md) for
+checkpoint compatibility, command-specific evaluation, run artifacts, and
+failure triage.
+
+## Enforce hard rules
+
+- Never claim that an XML is trainable because it compiles or steps.
+- Never invent a complete reward, observation, or termination design from a
+  model name.
+- Never start long training before runtime validation, environment smoke, and
+  `--preset smoke` training pass.
+- Never use a policy with a different environment or network architecture
+  without explicit compatibility evidence.
+- Never hide project-specific research logic inside generic SimRig code.
+- Never assume Isaac Lab or another backend; SimRig v0 trains through
+  `mujoco-playground`.
+- Never report success from reward alone; connect evaluation to the user's task
+  contract and visual behavior.
+
+## Report the handoff
+
+Return a compact evidence summary:
+
+- model or environment used;
+- task contract and scene assumptions;
+- validation and smoke results;
+- exact training command, preset, and run directory;
+- checkpoint and evaluation metrics;
+- preview URL when running;
+- remaining limitation or next experiment.

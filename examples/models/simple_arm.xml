@@ -11,8 +11,8 @@
     <light pos="0 0 2" dir="0 0 -1"/>
     <geom name="floor" type="plane" size="1 1 0.05" rgba="0.2 0.2 0.2 1"/>
 
-    <!-- Target marker (mocap-free visual only; env moves site via code or we use a body) -->
-    <body name="target" pos="0.25 0.0 0.15">
+    <!-- The environment moves this marker to each sampled target through mocap_pos. -->
+    <body name="target" mocap="true" pos="0.25 0.0 0.15">
       <geom name="target_geom" type="sphere" size="0.03" rgba="0.9 0.2 0.2 0.5" contype="0" conaffinity="0"/>
       <site name="target_site" pos="0 0 0" size="0.01"/>
     </body>

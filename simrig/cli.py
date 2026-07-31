@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from simrig._version import __version__
 from simrig.core import report_markdown, to_dict
 from simrig.huggingface import resolve_policy_checkpoint
 from simrig.io import save_json, save_report_pair, slugify
@@ -41,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="simrig",
         description="Physical AI simulation training starter workflows.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="Create local SimRig output folders.")
@@ -111,6 +113,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_parser.add_argument("--backend", default="mujoco-playground")
     eval_parser.add_argument("--steps", type=int, default=500)
+    eval_parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Deterministic environment and policy rollout seed.",
+    )
+    eval_parser.add_argument(
+        "--command",
+        type=float,
+        nargs="+",
+        help="Fix command-like environment state, for example X Y YAW.",
+    )
     eval_parser.add_argument("--small-network", action=argparse.BooleanOptionalAction, default=None)
     eval_parser.add_argument("--hf-revision", help="Revision for hf:// policy checkpoints.")
     eval_parser.add_argument("--hf-token", help="Hugging Face token for private policy repos.")
@@ -258,6 +272,7 @@ def _cmd_train(args: argparse.Namespace) -> None:
 
 
 def _cmd_eval(args: argparse.Namespace) -> None:
+    command = tuple(args.command) if args.command is not None else None
     checkpoint = resolve_policy_checkpoint(
         args.checkpoint,
         hf_revision=args.hf_revision,
@@ -269,6 +284,8 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         backend=args.backend,
         steps=args.steps,
         small_network=args.small_network,
+        seed=args.seed,
+        command=command,
     )
     save_json(Path("reports") / f"{slugify(args.env_name)}_eval.json", result)
     _print(result, as_json=args.json)

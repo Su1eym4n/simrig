@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from simrig import __version__
 from simrig.cli import build_parser, main
 
 
@@ -19,6 +21,15 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_version(self) -> None:
+        parser = build_parser()
+        stdout = StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(stdout):
+            parser.parse_args(["--version"])
+
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(stdout.getvalue().strip(), f"simrig {__version__}")
+
     def test_cli_init_creates_output_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             code, stdout, _ = _run_cli(["init", "--root", tmp])
@@ -135,6 +146,31 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.checkpoint, "hf://simrig/go1-policy/policy.params")
         self.assertEqual(args.hf_revision, "abc123")
+
+    def test_eval_passes_seed_and_command(self) -> None:
+        with (
+            patch("simrig.cli.resolve_policy_checkpoint", return_value=Path("policy.params")),
+            patch("simrig.cli.eval_policy", return_value={"average_reward": 1.0}) as evaluate,
+            patch("simrig.cli.save_json"),
+        ):
+            code, _, _ = _run_cli(
+                [
+                    "eval",
+                    "policy.params",
+                    "--env",
+                    "Go1JoystickFlatTerrain",
+                    "--seed",
+                    "4",
+                    "--command",
+                    "0.8",
+                    "0",
+                    "0",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(evaluate.call_args.kwargs["seed"], 4)
+        self.assertEqual(evaluate.call_args.kwargs["command"], (0.8, 0.0, 0.0))
 
     def test_preview_command_parses_browser_options(self) -> None:
         parser = build_parser()

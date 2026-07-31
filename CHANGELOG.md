@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `simrig eval` accepts reproducible `--seed` rollouts and fixed
+  `--command` values for command-conditioned environments.
+- `simrig --version` reports the package version from one shared source.
+- The reaching example samples reachable planar targets and keeps its rendered
+  target marker synchronized with environment state.
+- Codex discovers the repository skill through `.agents/skills/simrig`.
 - Custom `*.py` env modules can be used with `inspect-env`, `smoke`, `train`, `eval`, `demo`, and `preview`.
 - `validate-env --runtime` imports the module and runs construct/reset/step checks when possible.
 - `new-env` scaffold includes `make_env()` and documents the smoke/train path.

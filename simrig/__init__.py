@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simrig._version import __version__
 from simrig.core import (
     BackendInfo,
     EnvInspectionReport,
@@ -25,6 +26,7 @@ from simrig.scaffold import new_env
 from simrig.validate_env import EnvValidationResult, validate_env
 
 __all__ = [
+    "__version__",
     "BackendInfo",
     "EnvInspectionReport",
     "EnvValidationResult",

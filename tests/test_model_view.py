@@ -9,6 +9,7 @@ from simrig.cli import build_parser
 
 ARM_XML = """\
 <mujoco model="arm">
+  <compiler angle="radian"/>
   <worldbody>
     <body name="link1" pos="0 0 0">
       <joint name="shoulder" type="hinge" range="-1.5 1.5"/>

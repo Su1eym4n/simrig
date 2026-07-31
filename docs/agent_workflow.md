@@ -26,7 +26,7 @@ Use this workflow when guiding a user with SimRig.
 4. Evaluate:
 
    ```bash
-   simrig eval runs/.../policy.params --env ENV_NAME --steps 500
+   simrig eval runs/.../policy.params --env ENV_NAME --steps 500 --seed 0
    ```
 
 5. Prefer browser previews when an AI coding agent needs to inspect the result:
@@ -83,7 +83,7 @@ Use this path when no Playground env fits and the user wants a custom task.
    ```bash
    simrig smoke envs/TASK_NAME.py --steps 10
    simrig train envs/TASK_NAME.py --preset smoke
-   simrig eval runs/.../policy.params --env envs/TASK_NAME.py
+   simrig eval runs/.../policy.params --env envs/TASK_NAME.py --seed 0
    ```
 
 4. Rules for agents filling the scaffold:

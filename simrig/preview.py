@@ -236,6 +236,11 @@ class PolicyPreviewSession:
     def _copy_state_to_mujoco_unlocked(self) -> None:
         self.mj_data.qpos[:] = np.asarray(self.state.data.qpos)
         self.mj_data.qvel[:] = np.asarray(self.state.data.qvel)
+        for name in ("mocap_pos", "mocap_quat"):
+            source = getattr(self.state.data, name, None)
+            target = getattr(self.mj_data, name, None)
+            if source is not None and target is not None:
+                target[:] = np.asarray(source)
         self.mujoco.mj_forward(self.env.mj_model, self.mj_data)
 
     def _tracking_body_id(self) -> int:

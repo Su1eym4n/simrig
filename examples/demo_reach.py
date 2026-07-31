@@ -35,6 +35,10 @@ def default_config() -> dict[str, Any]:
         "reward_distance_scale": 1.0,
         "reward_success": 1.0,
         "success_distance": 0.05,
+        "target_radius_min": 0.12,
+        "target_radius_max": 0.34,
+        "target_angle_min": 0.0,
+        "target_angle_max": 1.0,
     }
 
 
@@ -70,6 +74,20 @@ class CustomEnv:
         self._ee_site_id = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_SITE, "ee_site")
         if self._ee_site_id < 0:
             raise ValueError("simple_arm.xml must define site ee_site")
+        shoulder_id = mujoco.mj_name2id(
+            self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, "shoulder"
+        )
+        target_body_id = mujoco.mj_name2id(
+            self._mj_model, mujoco.mjtObj.mjOBJ_BODY, "target"
+        )
+        if shoulder_id < 0 or target_body_id < 0:
+            raise ValueError("simple_arm.xml must define joint shoulder and body target")
+        self._target_mocap_id = int(self._mj_model.body_mocapid[target_body_id])
+        if self._target_mocap_id < 0:
+            raise ValueError("simple_arm.xml target body must be mocap-enabled")
+        native_data = mujoco.MjData(self._mj_model)
+        mujoco.mj_forward(self._mj_model, native_data)
+        self._shoulder_origin = jp.asarray(native_data.xanchor[shoulder_id])
         low = self._mj_model.actuator_ctrlrange[:, 0]
         high = self._mj_model.actuator_ctrlrange[:, 1]
         self._ctrl_low = jp.asarray(low)
@@ -114,19 +132,31 @@ class CustomEnv:
 
     def reset(self, rng: jax.Array) -> State:
         # SECTION: reset
-        rng, q_rng, target_rng = jax.random.split(rng, 3)
+        rng, q_rng, radius_rng, angle_rng = jax.random.split(rng, 4)
         data = mjx.make_data(self._mjx_model)
         qpos = data.qpos.at[:].set(
             jax.random.uniform(q_rng, (self._mj_model.nq,), minval=-0.4, maxval=0.4)
         )
         data = data.replace(qpos=qpos, qvel=jp.zeros(self._mj_model.nv))
-        target_xy = jax.random.uniform(
-            target_rng,
-            (2,),
-            minval=jp.array([0.12, -0.12]),
-            maxval=jp.array([0.32, 0.12]),
+        radius = jax.random.uniform(
+            radius_rng,
+            (),
+            minval=float(self.config["target_radius_min"]),
+            maxval=float(self.config["target_radius_max"]),
         )
-        target_pos = jp.array([target_xy[0], target_xy[1], 0.15])
+        angle = jax.random.uniform(
+            angle_rng,
+            (),
+            minval=float(self.config["target_angle_min"]),
+            maxval=float(self.config["target_angle_max"]),
+        )
+        target_offset = jp.array(
+            [radius * jp.cos(angle), 0.0, radius * jp.sin(angle)]
+        )
+        target_pos = self._shoulder_origin + target_offset
+        data = data.replace(
+            mocap_pos=data.mocap_pos.at[self._target_mocap_id].set(target_pos)
+        )
         data = mjx.forward(self._mjx_model, data)
         info = {
             "rng": rng,

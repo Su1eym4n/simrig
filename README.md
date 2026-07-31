@@ -29,7 +29,10 @@ Evaluate and open a browser preview of the saved policy (path will match your
 `runs/` output):
 
 ```bash
-simrig eval runs/<run-dir>/policy.params --env Go1JoystickFlatTerrain
+simrig eval runs/<run-dir>/policy.params \
+  --env Go1JoystickFlatTerrain \
+  --seed 0 \
+  --command 0.5 0.0 0.0
 simrig preview runs/<run-dir>/policy.params \
   --env Go1JoystickFlatTerrain \
   --command 0.5 0.0 0.0 \
@@ -95,7 +98,7 @@ repo. Full steps: [skills/README.md](skills/README.md).
 pip install -e ".[playground]"   # put `simrig` on PATH; PyPI later
 
 cp -R skills/simrig ~/.claude/skills/simrig   # Claude Code
-cp -R skills/simrig ~/.codex/skills/simrig    # Codex
+cp -R skills/simrig ~/.agents/skills/simrig   # Codex
 cp -R skills/simrig ~/.cursor/skills/simrig   # Cursor
 ```
 
@@ -125,6 +128,20 @@ simrig demo /path/to/policy.params \
 
 `--command` applies only for envs that expose command-like state (joystick
 locomotion). Not every Playground task has a high-level command.
+
+Headless evaluation accepts `--seed` for reproducible rollouts and `--command`
+for fixed-command tasks:
+
+```bash
+simrig eval /path/to/policy.params \
+  --env Go1JoystickFlatTerrain \
+  --seed 4 \
+  --command 0.8 0.0 0.0
+```
+
+SimRig fails clearly if `--command` is used with an environment that does not
+expose command-like state. Run multiple seeds separately when reporting task
+performance.
 
 Load policies from Hugging Face with `hf://owner/repo/path`:
 

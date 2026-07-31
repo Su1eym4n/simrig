@@ -7,6 +7,10 @@ Tiny assets for testing SimRig’s **custom env CLI path** — not product tasks
 1. Model: [`models/simple_arm.xml`](models/simple_arm.xml) (2-DOF arm)
 2. Env module: [`demo_reach.py`](demo_reach.py) (filled `new-env` scaffold)
 
+Targets are sampled inside the arm's reachable X-Z plane. The environment moves
+the red mocap marker to the sampled task target so evaluation and previews show
+the same goal used by the reward.
+
 Recreate the scaffold yourself:
 
 ```bash

@@ -350,10 +350,11 @@ def eval_policy(
     backend: str = "mujoco-playground",
     small_network: bool | None = None,
     seed: int = 0,
+    command: tuple[float, ...] | None = None,
 ) -> dict[str, Any]:
     """Headless deterministic policy rollout."""
     _validate_backend(backend)
-    jax, _, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
+    jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
     env = load_env(env_name)
     sizes = hidden_sizes(resolve_small_network(checkpoint, small_network=small_network))
     network_factory = functools.partial(
@@ -374,9 +375,18 @@ def eval_policy(
     step = jax.jit(env.step)
     rng = jax.random.PRNGKey(seed)
     state = reset(rng)
+    command_applied = False
+    if command is not None:
+        state, command_applied = _apply_command(env, state, jp.asarray(command))
+        if not command_applied:
+            raise ValueError(
+                f"Environment {resolve_env_label(env_name)} does not expose command-like state."
+            )
     total_reward = 0.0
     completed = 0
     for completed in range(1, steps + 1):
+        if command is not None:
+            state, command_applied = _apply_command(env, state, jp.asarray(command))
         rng, action_rng = jax.random.split(rng)
         action, _ = policy(state.obs, action_rng)
         state = step(state, action)
@@ -387,6 +397,9 @@ def eval_policy(
         "env_name": resolve_env_label(env_name),
         "backend": backend,
         "checkpoint": str(checkpoint),
+        "seed": seed,
+        "command": list(command) if command is not None else None,
+        "command_applied": command_applied,
         "steps_requested": steps,
         "steps_completed": completed,
         "total_reward": total_reward,
@@ -460,6 +473,7 @@ def demo_policy(
 
             mj_data.qpos = state.data.qpos
             mj_data.qvel = state.data.qvel
+            _copy_mocap_state(state.data, mj_data)
             mujoco.mj_forward(env.mj_model, mj_data)
             viewer.data = mj_data
             viewer.add_overlay(
@@ -494,6 +508,15 @@ def _validate_backend(backend: str) -> None:
             f"Unsupported backend for v0: {backend}. "
             "SimRig v0 supports only mujoco-playground training envs."
         )
+
+
+def _copy_mocap_state(source_data: Any, target_data: Any) -> None:
+    """Copy optional MJX mocap state into native MuJoCo render data."""
+    for name in ("mocap_pos", "mocap_quat"):
+        source = getattr(source_data, name, None)
+        target = getattr(target_data, name, None)
+        if source is not None and target is not None:
+            target[:] = source
 
 
 def _apply_command(env: Any, state: Any, command: Any) -> tuple[Any, bool]:
