@@ -140,15 +140,40 @@ Follow:
 Anyone can use SimRig with Claude Code / Codex / Cursor **without** opening this
 repo. Full steps: [skills/README.md](skills/README.md).
 
-```bash
-pip install -e ".[playground]"   # put `simrig` on PATH; PyPI later
+Before SimRig is published to PyPI, clone it into a permanent location and
+install both the CLI and the skill:
 
-cp -R skills/simrig ~/.claude/skills/simrig   # Claude Code
+```bash
+git clone https://github.com/Su1eym4n/simrig.git
+cd simrig
+
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev,playground]"
+python -m pip check
+
+mkdir -p ~/.agents/skills
 cp -R skills/simrig ~/.agents/skills/simrig   # Codex
+
+mkdir -p ~/.claude/skills
+cp -R skills/simrig ~/.claude/skills/simrig   # Claude Code
+
+mkdir -p ~/.cursor/skills
 cp -R skills/simrig ~/.cursor/skills/simrig   # Cursor
 ```
 
-Restart the agent session, then ask it to “use the simrig skill”.
+The editable CLI installation remains connected to that clone. Before using
+SimRig from another folder, activate its environment:
+
+```bash
+source /path/to/simrig/.venv/bin/activate
+cd /path/to/your/robot-project
+simrig --version
+```
+
+Restart the agent session, then ask it to “use the simrig skill”. After the
+one-time skill copy, the agent workflow is available from any folder.
 
 ## Model inspection
 

@@ -8,9 +8,16 @@ working directory (you do not need this repo open).
 
 1. Python 3.10 or newer and the SimRig CLI on PATH:
    ```bash
+   # After PyPI publication:
    pip install "simrig[playground]"
-   # until published to PyPI, from a clone:
-   pip install -e ".[playground]"
+
+   # Before PyPI publication, from a permanent clone:
+   git clone https://github.com/Su1eym4n/simrig.git
+   cd simrig
+   python3.12 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install -e ".[dev,playground]"
+   python -m pip check
    simrig --help
    ```
 2. This skill folder available in the agent’s skills directory (below).
@@ -35,6 +42,15 @@ cp -R skills/simrig ~/.claude/skills/simrig
 # Cursor
 mkdir -p ~/.cursor/skills
 cp -R skills/simrig ~/.cursor/skills/simrig
+```
+
+When using the pre-PyPI editable installation from another folder, activate the
+clone's virtual environment first:
+
+```bash
+source /path/to/simrig/.venv/bin/activate
+cd /path/to/your/robot-project
+simrig --version
 ```
 
 After the repository is published, Codex can install it from GitHub through
