@@ -45,6 +45,52 @@ Open `http://127.0.0.1:8765/`. Drag to orbit and scroll to zoom.
 
 Use `smoke` before `local` or `cloud`. Longer presets need more compute.
 
+## Test a fresh clone
+
+SimRig requires Python 3.10 or newer. Check the interpreter explicitly—some
+macOS installations still provide Python 3.9 as `python3`.
+
+```bash
+git clone https://github.com/Su1eym4n/simrig.git
+cd simrig
+
+python3.12 -m venv .venv  # Python 3.10, 3.11, or 3.12
+source .venv/bin/activate
+python --version
+python -m pip install --upgrade pip
+```
+
+For a lightweight contributor check:
+
+```bash
+python -m pip install -e ".[dev]"
+simrig --version
+python -m pytest
+```
+
+For the complete MuJoCo Playground path:
+
+```bash
+python -m pip install -e ".[dev,playground]"
+python -m pip check
+simrig validate-env examples/demo_reach.py --runtime
+simrig smoke examples/demo_reach.py --steps 10
+simrig train examples/demo_reach.py --preset smoke
+simrig eval runs/<run-dir>/policy.params \
+  --env examples/demo_reach.py \
+  --steps 50 \
+  --seed 0
+```
+
+Replace `<run-dir>` with the directory printed by `simrig train`. Smoke training
+runs a small real PPO job and is intentionally more expensive than the tests
+and 10-step environment smoke check.
+
+When the cloned folder is opened as a Codex workspace, Codex discovers the
+repository skill through `.agents/skills/simrig`. Start a new task and ask:
+
+> Use $simrig to inspect and smoke-test the demo reach environment.
+
 ## Install
 
 For local package development:

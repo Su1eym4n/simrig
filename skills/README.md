@@ -6,7 +6,7 @@ working directory (you do not need this repo open).
 
 ## Requirements
 
-1. SimRig CLI on PATH:
+1. Python 3.10 or newer and the SimRig CLI on PATH:
    ```bash
    pip install "simrig[playground]"
    # until published to PyPI, from a clone:
@@ -42,7 +42,7 @@ After the repository is published, Codex can install it from GitHub through
 
 ```text
 Use $skill-installer to install the simrig skill from
-https://github.com/<github-user>/text-to-train/tree/main/skills/simrig
+https://github.com/Su1eym4n/simrig/tree/main/skills/simrig
 ```
 
 Restart the agent session (Claude Code: check with `/skills`).

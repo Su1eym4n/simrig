@@ -5,7 +5,14 @@ trainability, and useful for both humans and coding agents.
 
 ## Development setup
 
+Use Python 3.10 or newer in an isolated environment:
+
 ```bash
+git clone https://github.com/Su1eym4n/simrig.git
+cd simrig
+python3.12 -m venv .venv  # or another installed Python >= 3.10
+source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
@@ -19,6 +26,7 @@ For Playground train/eval (heavier JAX/Brax stack):
 
 ```bash
 python -m pip install -e ".[dev,playground]"
+python -m pip check
 ```
 
 ## Tests
@@ -31,6 +39,22 @@ python -m pytest
 
 CI runs the default pytest suite. Integration tests that need MuJoCo or
 Playground should skip cleanly when those extras are missing.
+
+With the Playground extra installed, also run the bundled end-to-end example:
+
+```bash
+simrig validate-env examples/demo_reach.py --runtime
+simrig smoke examples/demo_reach.py --steps 10
+simrig train examples/demo_reach.py --preset smoke
+simrig eval runs/<run-dir>/policy.params \
+  --env examples/demo_reach.py \
+  --steps 50 \
+  --seed 0
+```
+
+Replace `<run-dir>` with the directory printed by `simrig train`. The smoke
+preset verifies the PPO path; it is not evidence that a useful policy has
+converged.
 
 ## Pull requests
 
