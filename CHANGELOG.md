@@ -2,10 +2,18 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-07-31
+
 - `LiveWebViewer` lets ordinary MuJoCo Python scripts publish their existing
   `MjModel`/`MjData` state to the interactive Three.js viewer without handing
   control or simulation stepping to SimRig.
 - Live script viewers can track a named body and draw its browser-side path.
+- Package metadata links PyPI users back to the repository, issues, and
+  changelog.
+- CI installs its NumPy test dependency, validates built distributions, and
+  uses Node.js 24-compatible GitHub Actions.
+- Tagged releases publish through PyPI Trusted Publishing and create a GitHub
+  Release with the wheel and source distribution attached.
 
 ## 0.2.1 - 2026-07-31
 

@@ -10,8 +10,14 @@ The Python package and the agent skill are separate:
 - The `simrig` CLI runs inspection, training, evaluation, and previews.
 - The agent skill teaches Codex, Claude Code, or Cursor how to use that CLI.
 
-Install the CLI before installing the skill. Until SimRig is on PyPI, follow the
-GitHub clone and editable-install instructions in the main README.
+Install the CLI before installing the skill:
+
+```bash
+python -m pip install "simrig[playground]"
+```
+
+For repository development, follow the editable-install instructions in the
+main README.
 
 ## Repository-local use
 
@@ -36,8 +42,8 @@ npx skills add Su1eym4n/simrig \
   --yes
 ```
 
-When using the pre-PyPI editable installation, activate the clone's virtual
-environment before launching the agent or running SimRig:
+When using an editable installation, activate the clone's virtual environment
+before launching the agent or running SimRig:
 
 ```bash
 source /path/to/simrig/.venv/bin/activate

@@ -13,6 +13,12 @@ license-files = ["LICENSE"]
 authors = [{ name = "SimRig contributors" }]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/Su1eym4n/simrig"
+Repository = "https://github.com/Su1eym4n/simrig"
+Issues = "https://github.com/Su1eym4n/simrig/issues"
+Changelog = "https://github.com/Su1eym4n/simrig/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 mujoco = ["mujoco"]
 hf = ["huggingface_hub"]
@@ -23,7 +29,7 @@ playground = [
   "brax",
   "playground",
 ]
-dev = ["build", "pytest", "twine"]
+dev = ["build", "numpy", "pytest", "twine"]
 
 [project.scripts]
 simrig = "simrig.cli:main"

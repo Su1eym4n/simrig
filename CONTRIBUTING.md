@@ -64,6 +64,12 @@ converged.
 - Update `AGENTS.md` / `docs/agent_workflow.md` when agent-facing behavior changes.
 - Add or update tests for CLI and library behavior you change.
 
+## Releases
+
+Maintainers should follow [docs/releasing.md](docs/releasing.md). Tagged
+releases are built once, published to PyPI with Trusted Publishing, and then
+attached to the corresponding GitHub Release.
+
 ## Scope notes
 
 - v0.1 first-class path: existing MuJoCo Playground environments.
