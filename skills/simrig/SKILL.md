@@ -166,6 +166,14 @@ it without an explicit compute destination and user approval. Use
 Record the exact run directory and preserve its `config.json`,
 `final_metrics.json`, checkpoints, and `policy.params`.
 
+For an already-provisioned Lambda On-Demand Cloud GPU, read
+[lambda-cloud.md](references/lambda-cloud.md). Use `simrig cloud lambda connect`
+for the first interactive SSH connection, then `check`, `prepare`, remote
+`smoke`, and remote `train --preset smoke` before a detached `cloud` run. SimRig
+does not provision or terminate the billable instance. Fetch the complete run
+directory and remind the user to terminate the instance after artifacts are
+safe.
+
 ### 7. Evaluate behavior, not only reward
 
 Run headless evaluation first:

@@ -12,6 +12,16 @@ from simrig._version import __version__
 from simrig.core import report_markdown, to_dict
 from simrig.huggingface import resolve_policy_checkpoint
 from simrig.io import save_json, save_report_pair, slugify
+from simrig.lambda_cloud import (
+    LambdaSSHConfig,
+    check_lambda,
+    connect_lambda,
+    fetch_lambda,
+    prepare_lambda,
+    smoke_lambda,
+    status_lambda,
+    train_lambda,
+)
 from simrig.mujoco_backend import inspect_model, list_models
 from simrig.paths import ensure_project_dirs
 from simrig.playground_backend import (
@@ -215,6 +225,113 @@ def build_parser() -> argparse.ArgumentParser:
     validate_env_parser.add_argument("--json", action="store_true")
     validate_env_parser.set_defaults(func=_cmd_validate_env)
 
+    cloud_parser = sub.add_parser(
+        "cloud",
+        help="Connect to and train on an already-provisioned cloud GPU.",
+    )
+    cloud_providers = cloud_parser.add_subparsers(dest="cloud_provider", required=True)
+    lambda_parser = cloud_providers.add_parser(
+        "lambda",
+        help="Use a Lambda On-Demand Cloud instance over SSH.",
+    )
+    lambda_actions = lambda_parser.add_subparsers(dest="cloud_action", required=True)
+
+    lambda_connect = lambda_actions.add_parser(
+        "connect",
+        help="Open an interactive SSH connection to the instance.",
+    )
+    _add_lambda_connection_args(lambda_connect)
+    lambda_connect.add_argument(
+        "--tunnel-port",
+        type=int,
+        help="Forward this localhost port to the same port on the instance.",
+    )
+    lambda_connect.set_defaults(func=_cmd_lambda_connect)
+
+    lambda_check = lambda_actions.add_parser(
+        "check",
+        help="Check SSH plus NVIDIA and JAX device visibility.",
+    )
+    _add_lambda_connection_args(lambda_check)
+    lambda_check.set_defaults(func=_cmd_lambda_check)
+
+    lambda_prepare = lambda_actions.add_parser(
+        "prepare",
+        help="Sync this checkout and prepare a GPU-enabled remote virtualenv.",
+    )
+    _add_lambda_connection_args(lambda_prepare)
+    lambda_prepare.add_argument("--project", type=Path, default=Path("."))
+    lambda_prepare.add_argument("--remote-dir")
+    lambda_prepare.add_argument(
+        "--jax-cuda",
+        choices=("preinstalled", "cuda12", "cuda13"),
+        default="preinstalled",
+        help="Use Lambda's preinstalled JAX or install a pip CUDA wheel.",
+    )
+    lambda_prepare.set_defaults(func=_cmd_lambda_prepare)
+
+    lambda_smoke = lambda_actions.add_parser(
+        "smoke",
+        help="Run the reset/step environment smoke gate on the remote GPU.",
+    )
+    _add_lambda_connection_args(lambda_smoke)
+    lambda_smoke.add_argument(
+        "env_name",
+        help="Playground env name or synced custom *.py env module path.",
+    )
+    lambda_smoke.add_argument("--remote-dir")
+    lambda_smoke.add_argument("--steps", type=int, default=10)
+    lambda_smoke.set_defaults(func=_cmd_lambda_smoke)
+
+    lambda_train = lambda_actions.add_parser(
+        "train",
+        help="Run training on a prepared Lambda instance (smoke preset by default).",
+    )
+    _add_lambda_connection_args(lambda_train)
+    lambda_train.add_argument(
+        "env_name",
+        help="Playground env name or synced custom *.py env module path.",
+    )
+    lambda_train.add_argument(
+        "--preset",
+        choices=("smoke", "local", "cloud"),
+        default="smoke",
+    )
+    lambda_train.add_argument("--remote-dir")
+    lambda_train.add_argument(
+        "--output",
+        help="Remote run directory, relative to --remote-dir unless absolute.",
+    )
+    lambda_train.add_argument(
+        "--detach",
+        action="store_true",
+        help="Keep training after SSH disconnects and write train.log/train.pid.",
+    )
+    lambda_train.add_argument("--timesteps", type=int)
+    lambda_train.add_argument("--num-envs", type=int)
+    lambda_train.add_argument("--batch-size", type=int)
+    lambda_train.set_defaults(func=_cmd_lambda_train)
+
+    lambda_status = lambda_actions.add_parser(
+        "status",
+        help="Show detached process state and recent training log lines.",
+    )
+    _add_lambda_connection_args(lambda_status)
+    lambda_status.add_argument("output", help="Remote output returned by cloud lambda train.")
+    lambda_status.add_argument("--remote-dir")
+    lambda_status.add_argument("--lines", type=int, default=30)
+    lambda_status.set_defaults(func=_cmd_lambda_status)
+
+    lambda_fetch = lambda_actions.add_parser(
+        "fetch",
+        help="Download a remote run directory into local runs/.",
+    )
+    _add_lambda_connection_args(lambda_fetch)
+    lambda_fetch.add_argument("output", help="Remote output returned by cloud lambda train.")
+    lambda_fetch.add_argument("--remote-dir")
+    lambda_fetch.add_argument("--local-output", type=Path)
+    lambda_fetch.set_defaults(func=_cmd_lambda_fetch)
+
     return parser
 
 
@@ -372,6 +489,91 @@ def _cmd_validate_env(args: argparse.Namespace) -> int:
         status = "passed" if result.passed else "failed"
         print(f"validate-env: {status} (trainable={result.trainable})")
     return 0 if result.passed else 1
+
+
+def _add_lambda_connection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("host", help="Public IP address or DNS name from Lambda Cloud.")
+    parser.add_argument(
+        "--identity",
+        "-i",
+        type=Path,
+        help="Path to the SSH private key selected when the instance was launched.",
+    )
+    parser.add_argument("--user", default="ubuntu")
+    parser.add_argument("--port", type=int, default=22)
+
+
+def _lambda_config(args: argparse.Namespace) -> LambdaSSHConfig:
+    return LambdaSSHConfig(
+        host=args.host,
+        user=args.user,
+        identity=args.identity,
+        port=args.port,
+    )
+
+
+def _cmd_lambda_connect(args: argparse.Namespace) -> int:
+    return connect_lambda(_lambda_config(args), tunnel_port=args.tunnel_port)
+
+
+def _cmd_lambda_check(args: argparse.Namespace) -> int:
+    return check_lambda(_lambda_config(args))
+
+
+def _cmd_lambda_prepare(args: argparse.Namespace) -> None:
+    prepare_lambda(
+        _lambda_config(args),
+        project_dir=args.project,
+        remote_dir=args.remote_dir,
+        jax_cuda=args.jax_cuda,
+    )
+    print(f"prepared Lambda project: {args.remote_dir or f'/home/{args.user}/simrig'}")
+
+
+def _cmd_lambda_train(args: argparse.Namespace) -> int:
+    result = train_lambda(
+        _lambda_config(args),
+        args.env_name,
+        preset_name=args.preset,
+        remote_dir=args.remote_dir,
+        output=args.output,
+        detach=args.detach,
+        timesteps=args.timesteps,
+        num_envs=args.num_envs,
+        batch_size=args.batch_size,
+    )
+    if result.returncode == 0:
+        mode = "detached run" if result.detached else "run"
+        print(f"Lambda {mode}: {result.output_dir}")
+    return result.returncode
+
+
+def _cmd_lambda_smoke(args: argparse.Namespace) -> int:
+    return smoke_lambda(
+        _lambda_config(args),
+        args.env_name,
+        remote_dir=args.remote_dir,
+        steps=args.steps,
+    )
+
+
+def _cmd_lambda_status(args: argparse.Namespace) -> int:
+    return status_lambda(
+        _lambda_config(args),
+        args.output,
+        remote_dir=args.remote_dir,
+        lines=args.lines,
+    )
+
+
+def _cmd_lambda_fetch(args: argparse.Namespace) -> None:
+    destination = fetch_lambda(
+        _lambda_config(args),
+        args.output,
+        remote_dir=args.remote_dir,
+        local_output=args.local_output,
+    )
+    print(f"downloaded run: {destination}")
 
 
 def _training_overrides(args: argparse.Namespace) -> dict[str, Any]:
