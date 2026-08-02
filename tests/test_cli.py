@@ -216,6 +216,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.port, 8766)
         self.assertEqual(args.render_mode, "threejs")
 
+    def test_lambda_cloud_train_defaults_to_smoke(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            [
+                "cloud",
+                "lambda",
+                "train",
+                "203.0.113.12",
+                "Go1JoystickFlatTerrain",
+                "--identity",
+                "lambda.pem",
+                "--detach",
+            ]
+        )
+
+        self.assertEqual(args.host, "203.0.113.12")
+        self.assertEqual(args.env_name, "Go1JoystickFlatTerrain")
+        self.assertEqual(args.identity, Path("lambda.pem"))
+        self.assertEqual(args.preset, "smoke")
+        self.assertTrue(args.detach)
+
 
 if __name__ == "__main__":
     unittest.main()

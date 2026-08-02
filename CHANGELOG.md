@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an SSH-based Lambda On-Demand Cloud workflow with connection and GPU
+  checks, project sync/setup, remote smoke and PPO training, detached-run
+  status, and run-artifact download.
+- Add a Lambda GPU operations guide covering SSH keys, persistent storage,
+  smoke-before-cloud gates, port forwarding, and instance shutdown.
+
 ## 0.2.2 - 2026-07-31
 
 - `LiveWebViewer` lets ordinary MuJoCo Python scripts publish their existing

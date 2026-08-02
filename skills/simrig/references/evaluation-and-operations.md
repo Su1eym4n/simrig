@@ -13,7 +13,9 @@ checkpoint, or diagnosing a failed run.
 
 Treat these values as codebase defaults, not performance guarantees. Override
 only with an explicit reason. `cloud` does not submit to a cloud service; it
-runs the larger configuration in the current process.
+runs the larger configuration in the current process. For an already-launched
+Lambda GPU, use `simrig cloud lambda ...` and follow
+[lambda-cloud.md](lambda-cloud.md).
 
 ## Run artifacts
 

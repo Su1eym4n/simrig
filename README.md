@@ -186,10 +186,33 @@ transforms update the browser scene. The camera follows the robot without
 streaming rendered image frames. Use `--render-mode mujoco` for the older local
 image-stream preview or `--render-mode topdown` for the schematic fallback.
 
+### Train on a Lambda Cloud GPU
+
+After launching a Lambda On-Demand instance with an SSH key, SimRig can connect,
+sync this checkout, verify JAX GPU visibility, train, monitor a detached run,
+and download its artifacts:
+
+```bash
+simrig cloud lambda connect INSTANCE_IP --identity ~/Downloads/lambda-key.pem
+simrig cloud lambda prepare INSTANCE_IP --identity ~/Downloads/lambda-key.pem
+simrig cloud lambda smoke INSTANCE_IP Go1JoystickFlatTerrain \
+  --identity ~/Downloads/lambda-key.pem
+simrig cloud lambda train INSTANCE_IP Go1JoystickFlatTerrain \
+  --identity ~/Downloads/lambda-key.pem \
+  --preset smoke
+```
+
+Only after the environment and PPO smoke gates pass, start a detached large
+run with `--preset cloud --detach`. SimRig operates on an instance you already
+provisioned; it never launches or terminates billable Lambda resources. See the
+complete [Lambda Cloud GPU guide](docs/lambda-cloud.md), including persistent
+storage, monitoring, artifact download, and shutdown reminders.
+
 ## Documentation
 
 - [Examples](examples/README.md)
 - [Agent workflow](docs/agent_workflow.md)
+- [Lambda Cloud GPU training](docs/lambda-cloud.md)
 - [Agent skill installation](docs/skill-installation.md)
 - [Contributing](CONTRIBUTING.md)
 - [SimRig skill source](skills/simrig/SKILL.md)
