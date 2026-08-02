@@ -53,7 +53,8 @@ simrig eval POLICY --env ENV_OR_PATH --steps 500
 ```
 
 The built-in result reports rollout length, total reward, average reward, and
-whether the episode terminated. It does not by itself prove task success.
+whether the episode terminated. It records task success as unknown unless a
+task-specific evaluator exists; never rename rollout completion to “passed.”
 
 Use `--seed N` for a reproducible rollout and `--command X Y YAW` to hold
 command-like environment state fixed:
@@ -83,6 +84,11 @@ Preview the exact evaluated pair:
 ```bash
 simrig preview POLICY --env ENV_OR_PATH --port 8765
 ```
+
+Training run `config.json` files record the Python and package runtime. Eval,
+demo, and preview reject recorded version mismatches by default. The
+`--allow-runtime-mismatch` escape hatch is for qualitative compatibility review
+only and must be reported as such.
 
 The default `threejs` mode updates browser-side visual geometry from the live
 rollout while keeping camera interaction local. Use `--render-mode mujoco` for

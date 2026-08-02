@@ -17,7 +17,7 @@ instances and does not handle Lambda API keys.
 
 3. Run `check`, then `prepare`. `prepare` syncs the current SimRig checkout,
    uses Lambda's system packages in a virtualenv, installs `.[playground]`, and
-   requires JAX to report a GPU:
+   requires Python 3.11+ and JAX to report a GPU:
 
    ```bash
    simrig cloud lambda check HOST --identity KEY
@@ -26,7 +26,9 @@ instances and does not handle Lambda API keys.
 
    Prefer the default preinstalled Lambda Stack JAX. If it is absent or
    incompatible, retry intentionally with `--jax-cuda cuda12` or
-   `--jax-cuda cuda13` after checking the instance driver.
+   `--jax-cuda cuda13` after checking the instance driver. Use `--python PATH`
+   when the image's default `python3` is older than 3.11. Do not accept a pip
+   backtrack to an older Playground release as a compatibility fix.
 
 4. For custom modules, require local static and runtime validation. Then run
    the environment smoke gate on Lambda and a foreground PPO smoke run:
@@ -52,7 +54,9 @@ instances and does not handle Lambda API keys.
    simrig cloud lambda fetch HOST REMOTE_OUTPUT --identity KEY
    ```
 
-7. Evaluate the downloaded policy locally with the exact environment. Remind
+7. Evaluate the downloaded policy locally with the exact recorded Python and
+   package environment. Treat `--allow-runtime-mismatch` as qualitative only.
+   Remind
    the user to terminate the Lambda instance after artifacts are downloaded or
    confirmed on an attached persistent filesystem.
 
@@ -63,3 +67,8 @@ instance termination.
 For browser preview on the remote instance, use
 `cloud lambda connect --tunnel-port 8765`; do not advise opening a public
 preview port when an SSH tunnel is sufficient.
+
+When an identity is supplied, require a parseable private key with restrictive
+permissions and `IdentitiesOnly=yes`. The first interactive host fingerprint
+must be compared with an independent value from the cloud console; `ssh-keyscan`
+against the same endpoint is only trust-on-first-use.

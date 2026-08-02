@@ -26,6 +26,7 @@ from simrig.playground_backend import (
 )
 from simrig.presets import hidden_sizes, resolve_small_network
 from simrig.rendering import make_tracking_camera, tracking_body_id
+from simrig.runtime import verify_checkpoint_runtime
 from simrig.three_scene import geom_transforms, scene_payload
 
 
@@ -64,8 +65,13 @@ class PolicyPreviewSession:
         render_mode: str = "threejs",
         paused: bool = False,
         fps: int = 24,
+        allow_runtime_mismatch: bool = False,
     ) -> None:
         _validate_backend(backend)
+        self.runtime_compatibility = verify_checkpoint_runtime(
+            checkpoint,
+            allow_mismatch=allow_runtime_mismatch,
+        )
         self.env_name = env_name
         self.checkpoint = str(checkpoint)
         self.backend = backend
@@ -424,6 +430,7 @@ def serve_policy_preview(
     render_mode: str = "threejs",
     paused: bool = False,
     fps: int = 24,
+    allow_runtime_mismatch: bool = False,
 ) -> None:
     session = PolicyPreviewSession(
         checkpoint,
@@ -439,6 +446,7 @@ def serve_policy_preview(
         render_mode=render_mode,
         paused=paused,
         fps=fps,
+        allow_runtime_mismatch=allow_runtime_mismatch,
     )
 
     class Handler(BaseHTTPRequestHandler):

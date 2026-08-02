@@ -39,8 +39,8 @@ long-lived PyPI API token in GitHub.
    ```bash
    git switch main
    git pull --ff-only
-   git tag -a v0.2.2 -m "SimRig 0.2.2"
-   git push origin v0.2.2
+   git tag -a v0.3.0 -m "SimRig 0.3.0"
+   git push origin v0.3.0
    ```
 
 5. Watch the **Release** workflow. It should publish `simrig==0.2.2` to PyPI

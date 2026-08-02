@@ -44,6 +44,12 @@ simrig cloud lambda check INSTANCE_IP \
 The check must list an NVIDIA GPU. Before training, JAX must also report a GPU
 device rather than only `CpuDevice`.
 
+When `--identity` is supplied, SimRig validates that the file is parseable,
+rejects group/world-readable permissions, and tells OpenSSH to use only that
+identity. Compare the first interactive host fingerprint with the fingerprint
+shown in the Lambda console; scanning and trusting the same network endpoint is
+only trust-on-first-use.
+
 To reach a remote SimRig preview without opening another firewall port, forward
 port 8765 during an interactive session:
 
@@ -62,16 +68,25 @@ From the SimRig source checkout containing the robot, scene, and custom env:
 
 ```bash
 simrig cloud lambda prepare INSTANCE_IP \
-  --identity ~/Downloads/lambda-key.pem
+  --identity ~/Downloads/lambda-key.pem \
+  --python python3.12
 ```
 
 `prepare`:
 
 - syncs the checkout to `/home/ubuntu/simrig` with `rsync`;
 - excludes Git metadata, local virtualenvs, caches, reports, and existing runs;
-- creates `.venv` with Lambda's preinstalled system packages visible;
+- requires Python 3.11 or newer so pip cannot silently select the older
+  Playground 0.1 stack;
+- recreates `.venv` cleanly, with Lambda's preinstalled system packages visible
+  only in `--jax-cuda preinstalled` mode;
 - installs the checkout with the `playground` extra;
 - stops with an error unless JAX can see a GPU.
+
+The Playground extra pins the validated SimRig training stack. Use `--python`
+when the image's default `python3` is older than 3.11. Select an image with a
+suitable Python or install it through the image's normal environment-management
+workflow before running `prepare`; SimRig does not modify the system Python.
 
 The default `--jax-cuda preinstalled` mode follows Lambda's recommendation to
 reuse Lambda Stack packages. If the chosen image does not provide a usable JAX,
@@ -161,6 +176,15 @@ simrig preview runs/RUN/policy.params \
   --port 8765
 ```
 
+Training records Python and package versions in `config.json`. Eval, demo, and
+preview refuse a different recorded runtime by default. If exact recreation is
+impossible, `--allow-runtime-mismatch` permits an explicitly qualitative check;
+it is not equivalent evaluation evidence.
+
+The generic evaluator reports rollout completion, termination, and reward, but
+sets task success to unknown. Command tracking, foot slip, energy, or other
+task-specific outcomes require a separate evaluator and explicit pass criteria.
+
 After confirming that artifacts are local or on persistent storage, terminate
 the instance from the Lambda console to stop compute charges. SimRig does not
 terminate it automatically.
@@ -170,7 +194,8 @@ terminate it automatically.
 | Symptom | First check |
 |---|---|
 | SSH asks about an unknown host | Run `cloud lambda connect` interactively once and verify the fingerprint |
-| `Permission denied (publickey)` | Confirm the private key matches the key selected at instance launch and its permissions are `400` or `600` |
+| Invalid or rejected identity file | Confirm the private key matches the key selected at launch, is a real OpenSSH/PEM key rather than a path stored inside a text file, and has permissions `400` or `600` |
+| Remote Python is too old | Select Python 3.11+ with `prepare --python /path/to/python` |
 | `rsync` is missing locally | Install `rsync`; both `prepare` and `fetch` require it |
 | `nvidia-smi` fails | Confirm the instance is a GPU type and uses a Lambda Stack or GPU Base image |
 | JAX reports only CPU | Recreate the venv with `prepare`; inspect the base image and JAX/CUDA compatibility |
