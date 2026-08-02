@@ -1,5 +1,15 @@
 # SimRig
 
+<div align="center">
+
+<img src="assets/g1-greeting.gif" alt="Unitree G1 waving hello in SimRig's interactive browser preview" width="100%">
+
+<br>
+
+<em>A pretrained Unitree G1 policy preview with a scripted greeting.</em>
+
+</div>
+
 Turn MuJoCo robots into trained policies with agent-guided task design, PPO
 training, evaluation, and interactive previews.
 
@@ -13,6 +23,63 @@ SimRig combines:
 Raw robot XML is not automatically a training task. SimRig helps the agent move
 from a model and a requested behavior to explicit observations, actions,
 rewards, resets, termination conditions, validation, training, and evaluation.
+
+## From prompt to simulation
+
+### Train Go1 through a smoke-gated cloud workflow
+
+SimRig prepares the existing Go1 locomotion environment and runs local smoke
+tests before requesting the user's Lambda Cloud details. The full cloud run
+starts only after that handoff. The recorded result below shows the trained
+checkpoint downloaded and running in SimRig's interactive browser preview.
+
+<details>
+<summary><strong>Prompt</strong></summary>
+
+> Prepare the full Go1 robot training setup and run local smoke tests to verify
+> everything works. Once the tests pass, ask me for my Lambda Cloud details
+> before starting the full training run.
+
+</details>
+
+<img src="assets/go1-training.gif" alt="Codex running a smoke-gated Go1 training workflow and previewing the trained policy in SimRig" width="100%">
+
+### Trace a five-pointed star with Franka Panda
+
+This example uses a directly scripted Cartesian trajectory and inverse
+kinematics—no reinforcement learning is needed. The controller keeps the
+end-effector orientation fixed, moves smoothly between star vertices, and
+publishes the running simulation and visible trace through SimRig's browser
+viewer.
+
+<details>
+<summary><strong>Prompt</strong></summary>
+
+> Can you configure a Franka Panda robotic arm in simulation so that its end
+> effector traces a five-pointed star trajectory?
+>
+> Please:
+>
+> - Use the Franka Panda arm and gripper.
+> - Move the end effector along a clear five-pointed star path in Cartesian
+>   space.
+> - Keep the end-effector orientation fixed and stable throughout the motion.
+> - Use inverse kinematics, trajectory planning, or a direct scripted controller
+>   rather than reinforcement learning unless training is genuinely necessary.
+> - Add a visible trajectory trace, marker, or drawing surface so the completed
+>   star can be verified.
+> - Make the motion smooth, with controlled velocity and acceleration between
+>   each star vertex.
+> - Provide the complete runnable script and all required launch commands.
+> - Explain how to modify the star size, star position, drawing plane,
+>   end-effector height, motion speed, and number of repetitions.
+> - State clearly whether the solution is directly scripted or trained, and
+>   explain why that method is appropriate.
+> - Prefer the simplest reliable direct-control implementation.
+
+</details>
+
+<img src="assets/franka-panda-star.gif" alt="Codex configuring a Franka Panda arm to trace a five-pointed star in SimRig's browser viewer" width="100%">
 
 ## What SimRig can do
 
