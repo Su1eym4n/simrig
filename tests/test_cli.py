@@ -171,6 +171,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(evaluate.call_args.kwargs["seed"], 4)
         self.assertEqual(evaluate.call_args.kwargs["command"], (0.8, 0.0, 0.0))
+        self.assertFalse(evaluate.call_args.kwargs["allow_runtime_mismatch"])
+
+    def test_eval_can_explicitly_allow_runtime_mismatch(self) -> None:
+        with (
+            patch("simrig.cli.resolve_policy_checkpoint", return_value=Path("policy.params")),
+            patch("simrig.cli.eval_policy", return_value={"task_success": None}) as evaluate,
+            patch("simrig.cli.save_json"),
+        ):
+            code, _, _ = _run_cli(
+                [
+                    "eval",
+                    "policy.params",
+                    "--env",
+                    "Go1JoystickFlatTerrain",
+                    "--allow-runtime-mismatch",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(evaluate.call_args.kwargs["allow_runtime_mismatch"])
 
     def test_preview_command_parses_browser_options(self) -> None:
         parser = build_parser()
@@ -237,6 +257,22 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.identity, Path("lambda.pem"))
         self.assertEqual(args.preset, "smoke")
         self.assertTrue(args.detach)
+
+    def test_lambda_prepare_accepts_remote_python(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            [
+                "cloud",
+                "lambda",
+                "prepare",
+                "203.0.113.12",
+                "--python",
+                "/usr/bin/python3.12",
+            ]
+        )
+
+        self.assertEqual(args.python_command, "/usr/bin/python3.12")
 
 
 if __name__ == "__main__":

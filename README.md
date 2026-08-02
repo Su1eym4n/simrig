@@ -208,6 +208,11 @@ provisioned; it never launches or terminates billable Lambda resources. See the
 complete [Lambda Cloud GPU guide](docs/lambda-cloud.md), including persistent
 storage, monitoring, artifact download, and shutdown reminders.
 
+Lambda preparation requires Python 3.11+ and installs a pinned Playground
+training stack. Every run records its Python and package versions; checkpoint
+eval, demo, and preview reject a different recorded runtime unless
+`--allow-runtime-mismatch` is explicitly selected for qualitative review.
+
 ## Documentation
 
 - [Examples](examples/README.md)

@@ -14,6 +14,7 @@ from simrig.custom_env import is_env_module_path, load_custom_env, resolve_env_l
 from simrig.io import default_run_dir, save_json
 from simrig.paths import find_menagerie
 from simrig.presets import hidden_sizes, preset, resolve_small_network
+from simrig.runtime import runtime_manifest, verify_checkpoint_runtime
 
 
 def _import_registry():
@@ -302,7 +303,11 @@ def train_ppo(
         backend=backend,
         preset=preset_name,
         output_dir=str(output_dir),
-        config={**config, "env_ref": str(env_name)},
+        config={
+            **config,
+            "env_ref": str(env_name),
+            "runtime": runtime_manifest(),
+        },
         command=[
             sys.executable,
             "-m",
@@ -351,9 +356,14 @@ def eval_policy(
     small_network: bool | None = None,
     seed: int = 0,
     command: tuple[float, ...] | None = None,
+    allow_runtime_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Headless deterministic policy rollout."""
     _validate_backend(backend)
+    runtime = verify_checkpoint_runtime(
+        checkpoint,
+        allow_mismatch=allow_runtime_mismatch,
+    )
     jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
     env = load_env(env_name)
     sizes = hidden_sizes(resolve_small_network(checkpoint, small_network=small_network))
@@ -393,6 +403,7 @@ def eval_policy(
         total_reward += float(state.reward)
         if bool(state.done):
             break
+    completed_requested_steps = completed == steps and not bool(state.done)
     return {
         "env_name": resolve_env_label(env_name),
         "backend": backend,
@@ -405,6 +416,13 @@ def eval_policy(
         "total_reward": total_reward,
         "average_reward": total_reward / max(completed, 1),
         "terminated": bool(state.done),
+        "completed_requested_steps": completed_requested_steps,
+        "task_success": None,
+        "task_success_reason": (
+            "No task-specific success evaluator is configured; rollout completion and "
+            "reward do not prove command tracking or task success."
+        ),
+        "runtime_compatibility": runtime,
     }
 
 
@@ -419,9 +437,11 @@ def demo_policy(
     command: tuple[float, ...] | None = None,
     speed: float = 1.0,
     camera_distance: float | None = None,
+    allow_runtime_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Run a trained policy in a desktop MuJoCo viewer."""
     _validate_backend(backend)
+    verify_checkpoint_runtime(checkpoint, allow_mismatch=allow_runtime_mismatch)
     jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
     try:
         import mujoco  # type: ignore

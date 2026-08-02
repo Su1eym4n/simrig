@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 from typing import Sequence
 
@@ -65,14 +66,28 @@ def ssh_command(
     """Build an argv-safe SSH command."""
     command = ["ssh", "-p", str(config.port)]
     if config.identity is not None:
-        command.extend(["-i", str(config.identity.expanduser().resolve())])
+        command.extend(
+            [
+                "-i",
+                str(config.identity.expanduser().resolve()),
+                "-o",
+                "IdentitiesOnly=yes",
+            ]
+        )
     command.extend(["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4"])
     if batch:
         command.extend(["-o", "BatchMode=yes"])
     if tunnel_port is not None:
         if not 1 <= tunnel_port <= 65535:
             raise ValueError("Tunnel port must be between 1 and 65535.")
-        command.extend(["-L", f"{tunnel_port}:127.0.0.1:{tunnel_port}"])
+        command.extend(
+            [
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                f"{tunnel_port}:127.0.0.1:{tunnel_port}",
+            ]
+        )
     command.append(config.target)
     if remote_command is not None:
         command.append(remote_command)
@@ -115,6 +130,7 @@ def prepare_lambda(
     project_dir: Path | str = ".",
     remote_dir: str | None = None,
     jax_cuda: str = "preinstalled",
+    python_command: str = "python3",
 ) -> None:
     """Sync a SimRig source checkout and install it in a remote virtualenv."""
     _check_local_requirements(config, commands=("ssh", "rsync"))
@@ -123,6 +139,10 @@ def prepare_lambda(
         raise ValueError(f"Not a SimRig source checkout: {project}")
     if jax_cuda not in {"preinstalled", "cuda12", "cuda13"}:
         raise ValueError("JAX CUDA mode must be one of: preinstalled, cuda12, cuda13")
+    if not re.fullmatch(r"/?[A-Za-z0-9._/-]+", python_command) or ".." in PurePosixPath(
+        python_command
+    ).parts:
+        raise ValueError("Remote Python command contains unsupported characters.")
     remote_root = _resolve_remote_dir(config, remote_dir)
 
     mkdir = _shell_command(["mkdir", "-p", remote_root])
@@ -155,12 +175,18 @@ def prepare_lambda(
         "assert any(d.platform == 'gpu' for d in devices), "
         "'JAX cannot see a GPU; inspect the Lambda image and JAX installation'"
     )
-    venv = ["python3", "-m", "venv"]
+    python_check = (
+        "import sys; print('python:', sys.version.split()[0]); "
+        "assert sys.version_info >= (3, 11), "
+        "'SimRig Playground requires Python 3.11 or newer; pass --python PATH'"
+    )
+    venv = [python_command, "-m", "venv", "--clear"]
     if jax_cuda == "preinstalled":
         venv.append("--system-site-packages")
     venv.append(".venv")
     setup_commands = [
         ["cd", remote_root],
+        [python_command, "-c", python_check],
         venv,
         [".venv/bin/python", "-m", "pip", "install", "--upgrade", "pip"],
     ]
@@ -296,12 +322,17 @@ def status_lambda(
     pid_path = shlex.quote(f"{remote_output}/train.pid")
     log_path = shlex.quote(f"{remote_output}/train.log")
     policy_path = shlex.quote(f"{remote_output}/policy.params")
+    metrics_path = shlex.quote(f"{remote_output}/final_metrics.json")
+    checkpoint_path = shlex.quote(f"{remote_output}/checkpoints")
     remote = (
-        f"if test -f {pid_path}; then pid=$(cat {pid_path}); "
-        f"if kill -0 \"$pid\" 2>/dev/null; then state=running; "
-        f"elif test -f {policy_path}; then state=completed; else state=stopped; fi; "
-        "else pid=unknown; state=unknown; fi; "
-        "printf 'status=%s pid=%s\\n' \"$state\" \"$pid\"; "
+        f"if test -f {pid_path}; then pid=$(cat {pid_path}); else pid=unknown; fi; "
+        f"if test -f {policy_path} && test -f {metrics_path} "
+        f"&& test -n \"$(find {checkpoint_path} -type f -print -quit 2>/dev/null)\"; "
+        "then artifacts=complete; else artifacts=incomplete; fi; "
+        "if test \"$pid\" != unknown && kill -0 \"$pid\" 2>/dev/null; "
+        "then state=running; elif test \"$artifacts\" = complete; "
+        "then state=completed; else state=stopped; fi; "
+        "printf 'status=%s pid=%s artifacts=%s\\n' \"$state\" \"$pid\" \"$artifacts\"; "
         f"if test -f {log_path}; then tail -n {lines} {log_path}; fi"
     )
     return subprocess.run(ssh_command(config, remote, batch=True), check=False).returncode
@@ -331,7 +362,7 @@ def fetch_lambda(
     command = [
         "rsync",
         "-az",
-        "--info=progress2",
+        "--progress",
         "-e",
         shlex.join(transport),
         f"{config.target}:{remote_output}/",
@@ -346,9 +377,27 @@ def _check_local_requirements(config: LambdaSSHConfig, *, commands: Sequence[str
         if shutil.which(command) is None:
             raise RuntimeError(f"Required local command is not installed: {command}")
     if config.identity is not None:
-        identity = config.identity.expanduser()
+        identity = config.identity.expanduser().resolve()
         if not identity.is_file():
             raise FileNotFoundError(f"SSH private key not found: {identity}")
+        if identity.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise PermissionError(
+                f"SSH private key permissions are too open: {identity}. "
+                f"Run: chmod 600 {shlex.quote(str(identity))}"
+            )
+        ssh_keygen = shutil.which("ssh-keygen")
+        if ssh_keygen is None:
+            raise RuntimeError("Required local command is not installed: ssh-keygen")
+        validation = subprocess.run(
+            [ssh_keygen, "-lf", str(identity)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if validation.returncode != 0:
+            detail = validation.stderr.strip() or "ssh-keygen could not parse the file"
+            raise ValueError(f"Invalid SSH identity file {identity}: {detail}")
 
 
 def _resolve_remote_dir(config: LambdaSSHConfig, remote_dir: str | None) -> str:
