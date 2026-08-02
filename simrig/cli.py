@@ -138,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--small-network", action=argparse.BooleanOptionalAction, default=None)
     eval_parser.add_argument("--hf-revision", help="Revision for hf:// policy checkpoints.")
     eval_parser.add_argument("--hf-token", help="Hugging Face token for private policy repos.")
+    eval_parser.add_argument(
+        "--allow-runtime-mismatch",
+        action="store_true",
+        help="Allow an explicitly qualitative rollout when recorded runtime versions differ.",
+    )
     eval_parser.add_argument("--json", action="store_true")
     eval_parser.set_defaults(func=_cmd_eval)
 
@@ -152,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser.add_argument("--command", type=float, nargs="+")
     demo_parser.add_argument("--speed", type=float, default=1.0)
     demo_parser.add_argument("--camera-distance", type=float)
+    demo_parser.add_argument(
+        "--allow-runtime-mismatch",
+        action="store_true",
+        help="Allow an explicitly qualitative demo when recorded runtime versions differ.",
+    )
     demo_parser.add_argument("--json", action="store_true")
     demo_parser.set_defaults(func=_cmd_demo)
 
@@ -171,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--command", type=float, nargs="+")
     preview_parser.add_argument("--camera")
     preview_parser.add_argument("--paused", action="store_true", help="Start the browser preview paused.")
+    preview_parser.add_argument(
+        "--allow-runtime-mismatch",
+        action="store_true",
+        help="Allow an explicitly qualitative preview when recorded runtime versions differ.",
+    )
     preview_parser.add_argument(
         "--render-mode",
         choices=("threejs", "mujoco", "topdown"),
@@ -267,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("preinstalled", "cuda12", "cuda13"),
         default="preinstalled",
         help="Use Lambda's preinstalled JAX or install a pip CUDA wheel.",
+    )
+    lambda_prepare.add_argument(
+        "--python",
+        dest="python_command",
+        default="python3",
+        help="Remote Python 3.11+ executable used to create the training virtualenv.",
     )
     lambda_prepare.set_defaults(func=_cmd_lambda_prepare)
 
@@ -409,6 +430,7 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         small_network=args.small_network,
         seed=args.seed,
         command=command,
+        allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
     save_json(Path("reports") / f"{slugify(args.env_name)}_eval.json", result)
     _print(result, as_json=args.json)
@@ -430,6 +452,7 @@ def _cmd_demo(args: argparse.Namespace) -> None:
         command=command,
         speed=args.speed,
         camera_distance=args.camera_distance,
+        allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
     _print(result, as_json=args.json)
 
@@ -474,6 +497,7 @@ def _cmd_preview(args: argparse.Namespace) -> None:
         render_mode=args.render_mode,
         paused=args.paused,
         fps=args.fps,
+        allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
 
 
@@ -526,6 +550,7 @@ def _cmd_lambda_prepare(args: argparse.Namespace) -> None:
         project_dir=args.project,
         remote_dir=args.remote_dir,
         jax_cuda=args.jax_cuda,
+        python_command=args.python_command,
     )
     print(f"prepared Lambda project: {args.remote_dir or f'/home/{args.user}/simrig'}")
 
@@ -574,6 +599,10 @@ def _cmd_lambda_fetch(args: argparse.Namespace) -> None:
         local_output=args.local_output,
     )
     print(f"downloaded run: {destination}")
+    print(
+        "After verifying these artifacts or persistent storage, terminate the "
+        "Lambda instance in the cloud console to stop compute charges."
+    )
 
 
 def _training_overrides(args: argparse.Namespace) -> dict[str, Any]:

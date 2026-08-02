@@ -2,11 +2,27 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-08-01
+
 - Add an SSH-based Lambda On-Demand Cloud workflow with connection and GPU
   checks, project sync/setup, remote smoke and PPO training, detached-run
   status, and run-artifact download.
 - Add a Lambda GPU operations guide covering SSH keys, persistent storage,
   smoke-before-cloud gates, port forwarding, and instance shutdown.
+- Pin the Playground training stack and require Python 3.11+ during Lambda
+  preparation instead of silently resolving an older environment on Python
+  3.10.
+- Record Python and package versions in every training run and refuse eval,
+  demo, or preview under a different runtime unless the user explicitly allows
+  a qualitative mismatch.
+- Validate SSH identity files, restrict authentication to the selected key,
+  fail closed when port forwarding cannot be established, and support older
+  macOS `rsync` clients.
+- Require the final policy, metrics, and checkpoint artifacts before reporting
+  a detached Lambda run as completed; fetched runs now include a shutdown-cost
+  reminder.
+- Evaluation results distinguish rollout completion from task success and state
+  clearly when no task-specific success evaluator is configured.
 
 ## 0.2.2 - 2026-07-31
 
