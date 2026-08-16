@@ -26,6 +26,39 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
+  playground-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned training stack
+        run: python -m pip install -e ".[dev,playground]"
+
+      - name: Validate and smoke custom environment
+        run: |
+          simrig validate-env examples/demo_reach.py --runtime
+          simrig smoke examples/demo_reach.py --steps 10
+
+      - name: Train and reload a tiny policy
+        run: |
+          simrig train examples/demo_reach.py \
+            --preset smoke \
+            --timesteps 128 \
+            --num-envs 4 \
+            --batch-size 4 \
+            --seed 5 \
+            --output /tmp/simrig-ci-run
+          simrig eval /tmp/simrig-ci-run/policy.params \
+            --env examples/demo_reach.py \
+            --steps 20 \
+            --seed 5
+
   package:
     runs-on: ubuntu-latest
 

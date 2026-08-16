@@ -111,6 +111,19 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--timesteps", type=int)
     train_parser.add_argument("--num-envs", type=int)
     train_parser.add_argument("--batch-size", type=int)
+    train_parser.add_argument(
+        "--impl",
+        choices=("auto", "jax", "warp"),
+        default="auto",
+        help="MuJoCo implementation; auto follows the environment default.",
+    )
+    train_parser.add_argument("--seed", type=int, default=0, help="PPO training seed.")
+    train_parser.add_argument(
+        "--domain-randomization",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the environment's declared domain randomizer when available.",
+    )
     train_parser.set_defaults(func=_cmd_train)
 
     eval_parser = sub.add_parser("eval", help="Headless policy eval.")
@@ -331,6 +344,17 @@ def build_parser() -> argparse.ArgumentParser:
     lambda_train.add_argument("--timesteps", type=int)
     lambda_train.add_argument("--num-envs", type=int)
     lambda_train.add_argument("--batch-size", type=int)
+    lambda_train.add_argument(
+        "--impl",
+        choices=("auto", "jax", "warp"),
+        default="auto",
+    )
+    lambda_train.add_argument("--seed", type=int, default=0)
+    lambda_train.add_argument(
+        "--domain-randomization",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     lambda_train.set_defaults(func=_cmd_lambda_train)
 
     lambda_status = lambda_actions.add_parser(
@@ -411,6 +435,9 @@ def _cmd_train(args: argparse.Namespace) -> None:
         preset_name=args.preset,
         output=args.output,
         overrides=overrides,
+        impl=args.impl,
+        seed=args.seed,
+        domain_randomization=args.domain_randomization,
     )
     print(f"saved run: {run_config.output_dir}")
 
@@ -566,6 +593,9 @@ def _cmd_lambda_train(args: argparse.Namespace) -> int:
         timesteps=args.timesteps,
         num_envs=args.num_envs,
         batch_size=args.batch_size,
+        impl=args.impl,
+        seed=args.seed,
+        domain_randomization=args.domain_randomization,
     )
     if result.returncode == 0:
         mode = "detached run" if result.detached else "run"

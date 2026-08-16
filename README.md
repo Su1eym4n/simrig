@@ -160,10 +160,20 @@ activate automatically when the request matches its description.
 simrig list-envs --backend mujoco-playground
 simrig inspect-env Go1JoystickFlatTerrain
 simrig smoke Go1JoystickFlatTerrain --steps 10
-simrig train Go1JoystickFlatTerrain --preset smoke
+simrig train Go1JoystickFlatTerrain --preset smoke --impl auto --seed 0
 ```
 
 Use the `smoke` preset before a longer `local` or `cloud` configuration.
+For registered Playground environments, SimRig starts from the environment's
+tuned Brax PPO/network configuration and declared domain randomizer, then
+bounds the expensive dimensions for `smoke` or `local`. The `cloud` preset uses
+the full upstream task configuration unless you pass explicit overrides.
+
+`--impl auto` uses the environment's default implementation when supported. It
+selects MuJoCo Warp on a JAX-visible GPU when the environment defaults to Warp,
+and falls back to JAX on CPU-only hosts. Use `--impl jax` or `--impl warp` to
+make the choice explicit. Disable an available randomizer only for a deliberate
+baseline with `--no-domain-randomization`.
 
 ### Custom robot or scene
 
@@ -224,7 +234,7 @@ simrig new-env my_task --model path/to/scene.xml --template mjx
 simrig validate-env envs/my_task.py
 simrig validate-env envs/my_task.py --runtime
 simrig smoke envs/my_task.py --steps 10
-simrig train envs/my_task.py --preset smoke
+simrig train envs/my_task.py --preset smoke --seed 0
 ```
 
 The generated environment is a starter, not an invented task definition. The
@@ -266,7 +276,9 @@ simrig cloud lambda smoke INSTANCE_IP Go1JoystickFlatTerrain \
   --identity ~/Downloads/lambda-key.pem
 simrig cloud lambda train INSTANCE_IP Go1JoystickFlatTerrain \
   --identity ~/Downloads/lambda-key.pem \
-  --preset smoke
+  --preset smoke \
+  --impl auto \
+  --seed 0
 ```
 
 Only after the environment and PPO smoke gates pass, start a detached large
@@ -276,9 +288,12 @@ complete [Lambda Cloud GPU guide](docs/lambda-cloud.md), including persistent
 storage, monitoring, artifact download, and shutdown reminders.
 
 Lambda preparation requires Python 3.11+ and installs a pinned Playground
-training stack. Every run records its Python and package versions; checkpoint
-eval, demo, and preview reject a different recorded runtime unless
-`--allow-runtime-mismatch` is explicitly selected for qualitative review.
+training stack. Every run records its resolved PPO/network configuration,
+implementation, seed, randomizer, source hashes, Git state, JAX devices,
+precision-related environment, and package versions. Checkpoint eval, demo, and
+preview reconstruct the recorded implementation and network, and reject a
+different runtime unless `--allow-runtime-mismatch` is explicitly selected for
+qualitative review.
 
 ## Documentation
 

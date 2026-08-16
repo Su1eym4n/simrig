@@ -7,14 +7,47 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from simrig.core import BackendInfo, EnvInspectionReport, RunConfig, SmokeResult, TrainabilityStatus
+from simrig.core import (
+    BackendInfo,
+    EnvInspectionReport,
+    RunConfig,
+    SmokeResult,
+    TrainabilityStatus,
+)
 from simrig.custom_env import is_env_module_path, load_custom_env, resolve_env_label
 from simrig.io import default_run_dir, save_json
 from simrig.paths import find_menagerie
-from simrig.presets import hidden_sizes, preset, resolve_small_network
-from simrig.runtime import runtime_manifest, verify_checkpoint_runtime
+from simrig.presets import (
+    apply_preset_scale,
+    checkpoint_config,
+    legacy_network_factory,
+    preset,
+    resolve_network_factory,
+)
+from simrig.runtime import runtime_manifest, training_provenance, verify_checkpoint_runtime
+
+
+_PPO_CONFIG_KEYS = (
+    "num_eval_envs",
+    "num_evals",
+    "episode_length",
+    "normalize_observations",
+    "action_repeat",
+    "unroll_length",
+    "num_minibatches",
+    "num_updates_per_batch",
+    "discounting",
+    "learning_rate",
+    "entropy_cost",
+    "num_envs",
+    "batch_size",
+    "reward_scaling",
+    "num_resets_per_eval",
+    "max_grad_norm",
+    "clipping_epsilon",
+)
 
 
 def _import_registry():
@@ -44,6 +77,121 @@ def _import_training_deps():
             "MuJoCo Playground before running train/eval commands."
         ) from exc
     return jax, jp, brax_model, running_statistics, ppo_networks, ppo, wrapper
+
+
+def resolve_training_config(
+    env_name: str,
+    *,
+    preset_name: str,
+    impl: str = "auto",
+    seed: int = 0,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve a complete, serializable PPO configuration for one run."""
+    if impl not in {"auto", "jax", "warp"}:
+        raise ValueError("Implementation must be one of: auto, jax, warp")
+    if seed < 0:
+        raise ValueError("Training seed must be non-negative.")
+
+    if is_env_module_path(env_name):
+        resolved_impl = "jax" if impl == "auto" else impl
+        if resolved_impl == "warp" and not _warp_available():
+            raise RuntimeError("MuJoCo Warp training requires a JAX-visible GPU.")
+        impl_resolution = "auto-custom-env-default" if impl == "auto" else "explicit"
+        config = preset(preset_name)
+        network = legacy_network_factory(bool(config.pop("small_network")))
+        source = "simrig-generic-custom-env"
+    else:
+        registry = _import_registry()
+        resolved_impl, impl_resolution = _resolve_impl(registry, env_name, impl)
+        upstream, source = _upstream_ppo_config(env_name, resolved_impl)
+        network = upstream.pop("network_factory", {})
+        config = apply_preset_scale(preset_name, upstream)
+
+    config.update(overrides or {})
+    config.setdefault("normalize_observations", True)
+    config.setdefault("action_repeat", 1)
+    config.setdefault("reward_scaling", 1.0)
+    config.setdefault("num_resets_per_eval", 0)
+    config.update(
+        {
+            "seed": seed,
+            "impl": resolved_impl,
+            "impl_requested": impl,
+            "impl_resolution": impl_resolution,
+            "network_factory": network,
+            "ppo_config_source": source,
+        }
+    )
+    return config
+
+
+def _resolve_impl(registry: Any, env_name: str, requested: str) -> tuple[str, str]:
+    if requested != "auto":
+        if requested == "warp" and not _warp_available():
+            raise RuntimeError("MuJoCo Warp training requires a JAX-visible GPU.")
+        return requested, "explicit"
+    try:
+        config = registry.get_default_config(env_name)
+        resolved = config.get("impl", "jax")
+    except Exception:
+        resolved = "jax"
+    if str(resolved) == "warp" and not _warp_available():
+        return "jax", "auto-fallback-no-gpu"
+    return str(resolved), "auto-upstream-default"
+
+
+def _warp_available() -> bool:
+    try:
+        import jax  # type: ignore
+    except ImportError:
+        return False
+    try:
+        return any(device.platform == "gpu" for device in jax.devices())
+    except Exception:
+        return False
+
+
+def _upstream_ppo_config(env_name: str, impl: str) -> tuple[dict[str, Any], str]:
+    try:
+        from mujoco_playground._src import dm_control_suite, locomotion, manipulation  # type: ignore
+        from mujoco_playground.config import (  # type: ignore
+            dm_control_suite_params,
+            locomotion_params,
+            manipulation_params,
+        )
+    except ImportError as exc:
+        raise RuntimeError("MuJoCo Playground PPO configuration modules are unavailable.") from exc
+
+    if env_name in locomotion.ALL_ENVS:
+        module = locomotion_params
+        family = "locomotion"
+    elif env_name in manipulation.ALL_ENVS:
+        module = manipulation_params
+        family = "manipulation"
+    elif env_name in dm_control_suite.ALL_ENVS:
+        module = dm_control_suite_params
+        family = "dm-control-suite"
+    else:
+        raise ValueError(f"Unknown MuJoCo Playground environment: {env_name}")
+
+    raw = _plain_dict(module.brax_ppo_config(env_name, impl=impl))
+    if "num_timesteps" in raw:
+        raw["timesteps"] = raw.pop("num_timesteps")
+    return raw, f"mujoco-playground:{family}:brax_ppo_config"
+
+
+def _plain_dict(value: Any) -> Any:
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _plain_dict(to_dict())
+    if isinstance(value, Mapping):
+        return {str(key): _plain_dict(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_plain_dict(item) for item in value)
+    if isinstance(value, list):
+        return [_plain_dict(item) for item in value]
+    return value
 
 
 def _patch_jax_brax_compat(jax: Any) -> None:
@@ -269,28 +417,46 @@ def train_ppo(
     output: Path | str | None = None,
     backend: str = "mujoco-playground",
     overrides: dict[str, Any] | None = None,
+    impl: str = "auto",
+    seed: int = 0,
+    domain_randomization: bool = True,
 ) -> RunConfig:
     """Train a Playground or custom env module with Brax PPO."""
     _validate_backend(backend)
     jax, jp, brax_model, _, ppo_networks, ppo, wrapper = _import_training_deps()
-    del jax, jp
+    del jp
     label = resolve_env_label(env_name)
-    config = preset(preset_name)
-    config.update(overrides or {})
+    config = resolve_training_config(
+        env_name,
+        preset_name=preset_name,
+        impl=impl,
+        seed=seed,
+        overrides=overrides,
+    )
     output_dir = Path(output) if output is not None else default_run_dir(label, preset_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     # Orbax requires absolute checkpoint paths.
     output_dir = output_dir.resolve()
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    env = load_env(env_name, config_overrides={"impl": config.get("impl", "jax")})
-    sizes = hidden_sizes(bool(config["small_network"]))
+    env_overrides = {"impl": config["impl"]}
+    env = load_env(env_name, config_overrides=env_overrides)
+    eval_env = load_env(env_name, config_overrides=env_overrides)
     network_factory = functools.partial(
         ppo_networks.make_ppo_networks,
-        policy_hidden_layer_sizes=sizes,
-        value_hidden_layer_sizes=sizes,
-        policy_obs_key="state",
-        value_obs_key="privileged_state",
+        **config["network_factory"],
+    )
+    randomizer = _resolve_domain_randomizer(env_name, env) if domain_randomization else None
+    randomizer_name = _callable_name(randomizer) if randomizer is not None else None
+    config.update(
+        {
+            "domain_randomization_requested": domain_randomization,
+            "domain_randomization": randomizer is not None,
+            "domain_randomizer": randomizer_name,
+            "env_ref": str(env_name),
+            "runtime": runtime_manifest(),
+            "provenance": training_provenance(env_name, env, jax=jax),
+        }
     )
 
     def progress(num_steps: int, metrics: dict[str, Any]) -> None:
@@ -303,11 +469,7 @@ def train_ppo(
         backend=backend,
         preset=preset_name,
         output_dir=str(output_dir),
-        config={
-            **config,
-            "env_ref": str(env_name),
-            "runtime": runtime_manifest(),
-        },
+        config=config,
         command=[
             sys.executable,
             "-m",
@@ -316,35 +478,60 @@ def train_ppo(
             str(env_name),
             "--preset",
             preset_name,
+            "--impl",
+            config["impl"],
+            "--seed",
+            str(seed),
             "--output",
             str(output_dir),
         ],
     )
+    if not domain_randomization:
+        run_config.command.append("--no-domain-randomization")
+    for flag, key in (
+        ("--timesteps", "timesteps"),
+        ("--num-envs", "num_envs"),
+        ("--batch-size", "batch_size"),
+    ):
+        if overrides is not None and key in overrides:
+            run_config.command.extend([flag, str(overrides[key])])
     save_json(output_dir / "config.json", run_config)
+    train_kwargs = {
+        key: config[key]
+        for key in _PPO_CONFIG_KEYS
+        if key in config
+    }
     _, params, metrics = ppo.train(
         environment=env,
+        eval_env=eval_env,
         wrap_env_fn=wrapper.wrap_for_brax_training,
         num_timesteps=config["timesteps"],
-        num_evals=config["num_evals"],
-        num_eval_envs=config["num_eval_envs"],
-        episode_length=config["episode_length"],
-        normalize_observations=True,
-        action_repeat=1,
-        unroll_length=config["unroll_length"],
-        num_minibatches=config["num_minibatches"],
-        num_updates_per_batch=config["num_updates_per_batch"],
-        discounting=config["discounting"],
-        learning_rate=config["learning_rate"],
-        entropy_cost=config["entropy_cost"],
-        num_envs=config["num_envs"],
-        batch_size=config["batch_size"],
+        seed=seed,
+        randomization_fn=randomizer,
         network_factory=network_factory,
         progress_fn=progress,
         save_checkpoint_path=str(checkpoint_dir),
+        **train_kwargs,
     )
     brax_model.save_params(str(output_dir / "policy.params"), params)
     save_json(output_dir / "final_metrics.json", metrics)
     return run_config
+
+
+def _resolve_domain_randomizer(env_name: str, env: Any) -> Any | None:
+    if is_env_module_path(env_name):
+        candidate = getattr(env, "domain_randomizer", None)
+        return candidate if callable(candidate) else None
+    try:
+        return _import_registry().get_domain_randomizer(env_name)
+    except Exception:
+        return None
+
+
+def _callable_name(value: Any) -> str:
+    module = getattr(value, "__module__", None)
+    name = getattr(value, "__qualname__", getattr(value, "__name__", type(value).__name__))
+    return f"{module}.{name}" if module else str(name)
 
 
 def eval_policy(
@@ -365,14 +552,11 @@ def eval_policy(
         allow_mismatch=allow_runtime_mismatch,
     )
     jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
-    env = load_env(env_name)
-    sizes = hidden_sizes(resolve_small_network(checkpoint, small_network=small_network))
+    env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
+    network_config = resolve_network_factory(checkpoint, small_network=small_network)
     network_factory = functools.partial(
         ppo_networks.make_ppo_networks,
-        policy_hidden_layer_sizes=sizes,
-        value_hidden_layer_sizes=sizes,
-        policy_obs_key="state",
-        value_obs_key="privileged_state",
+        **network_config,
     )
     networks = network_factory(
         env.observation_size,
@@ -451,14 +635,11 @@ def demo_policy(
             "Interactive demo requires MuJoCo and Gymnasium's MuJoCo viewer."
         ) from exc
 
-    env = load_env(env_name)
-    sizes = hidden_sizes(resolve_small_network(checkpoint, small_network=small_network))
+    env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
+    network_config = resolve_network_factory(checkpoint, small_network=small_network)
     network_factory = functools.partial(
         ppo_networks.make_ppo_networks,
-        policy_hidden_layer_sizes=sizes,
-        value_hidden_layer_sizes=sizes,
-        policy_obs_key="state",
-        value_obs_key="privileged_state",
+        **network_config,
     )
     networks = network_factory(
         env.observation_size,
@@ -528,6 +709,14 @@ def _validate_backend(backend: str) -> None:
             f"Unsupported backend for v0: {backend}. "
             "SimRig v0 supports only mujoco-playground training envs."
         )
+
+
+def _checkpoint_env_overrides(checkpoint: Path | str) -> dict[str, Any] | None:
+    config = checkpoint_config(checkpoint)
+    if config is None:
+        return None
+    impl = config.get("impl")
+    return {"impl": impl} if impl in {"jax", "warp"} else None
 
 
 def _copy_mocap_state(source_data: Any, target_data: Any) -> None:

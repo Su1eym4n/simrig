@@ -123,7 +123,9 @@ the foreground so failures are immediately visible:
 ```bash
 simrig cloud lambda train INSTANCE_IP envs/my_task.py \
   --identity ~/Downloads/lambda-key.pem \
-  --preset smoke
+  --preset smoke \
+  --impl auto \
+  --seed 0
 ```
 
 Compilation, device visibility, and smoke success do not prove the requested
@@ -138,6 +140,8 @@ After every earlier gate passes, start the large preset in detached mode:
 simrig cloud lambda train INSTANCE_IP envs/my_task.py \
   --identity ~/Downloads/lambda-key.pem \
   --preset cloud \
+  --impl auto \
+  --seed 0 \
   --detach
 ```
 
@@ -153,6 +157,11 @@ simrig cloud lambda status INSTANCE_IP REMOTE_OUTPUT \
 You can replace the preset scale deliberately with `--timesteps`, `--num-envs`,
 or `--batch-size`. Large values can exhaust GPU memory; start from the tested
 smoke configuration and change one dimension at a time.
+
+For registered Playground tasks, `auto` preserves the upstream implementation
+when the GPU supports it (currently usually Warp) and training uses the task's
+tuned PPO/network config plus declared domain randomizer. Use
+`--no-domain-randomization` only for a deliberate non-randomized baseline.
 
 ## 6. Download and evaluate the result
 
@@ -176,10 +185,12 @@ simrig preview runs/RUN/policy.params \
   --port 8765
 ```
 
-Training records Python and package versions in `config.json`. Eval, demo, and
-preview refuse a different recorded runtime by default. If exact recreation is
-impossible, `--allow-runtime-mismatch` permits an explicitly qualitative check;
-it is not equivalent evaluation evidence.
+Training records the resolved implementation, network, randomizer, source
+hashes, Git state, JAX devices, and runtime versions in `config.json`. Eval,
+demo, and preview reconstruct the implementation and network and refuse a
+different recorded runtime by default. If exact recreation is impossible,
+`--allow-runtime-mismatch` permits an explicitly qualitative check; it is not
+equivalent evaluation evidence.
 
 The generic evaluator reports rollout completion, termination, and reward, but
 sets task success to unknown. Command tracking, foot slip, energy, or other

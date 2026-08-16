@@ -20,11 +20,12 @@ from simrig.browser_render import MujocoFramePump
 from simrig.browser_shell import camera_interaction_script, frame_poll_script, viewer_styles
 from simrig.playground_backend import (
     _apply_command,
+    _checkpoint_env_overrides,
     _import_training_deps,
     _validate_backend,
     load_env,
 )
-from simrig.presets import hidden_sizes, resolve_small_network
+from simrig.presets import resolve_network_factory
 from simrig.rendering import make_tracking_camera, tracking_body_id
 from simrig.runtime import verify_checkpoint_runtime
 from simrig.three_scene import geom_transforms, scene_payload
@@ -108,14 +109,17 @@ class PolicyPreviewSession:
         self.mujoco = mujoco
         self.Image = Image
         self.ImageDraw = ImageDraw
-        self.env = load_env(env_name)
-        sizes = hidden_sizes(resolve_small_network(checkpoint, small_network=small_network))
+        self.env = load_env(
+            env_name,
+            config_overrides=_checkpoint_env_overrides(checkpoint),
+        )
+        network_config = resolve_network_factory(
+            checkpoint,
+            small_network=small_network,
+        )
         network_factory = functools.partial(
             self.ppo_networks.make_ppo_networks,
-            policy_hidden_layer_sizes=sizes,
-            value_hidden_layer_sizes=sizes,
-            policy_obs_key="state",
-            value_obs_key="privileged_state",
+            **network_config,
         )
         networks = network_factory(
             self.env.observation_size,
