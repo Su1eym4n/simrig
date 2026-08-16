@@ -20,8 +20,13 @@ Use this workflow when guiding a user with SimRig.
 3. Train small first:
 
    ```bash
-   simrig train ENV_NAME --preset smoke
+   simrig train ENV_NAME --preset smoke --impl auto --seed 0
    ```
+
+   Existing Playground tasks use their upstream tuned PPO/network config and
+   declared domain randomizer. `auto` selects the upstream implementation when
+   supported and falls back from Warp to JAX when no JAX GPU is visible. Keep
+   randomization enabled unless the user explicitly wants a baseline.
 
 4. Evaluate:
 
@@ -106,7 +111,7 @@ Use this path when no Playground env fits and the user wants a custom task.
 
    ```bash
    simrig smoke envs/TASK_NAME.py --steps 10
-   simrig train envs/TASK_NAME.py --preset smoke
+   simrig train envs/TASK_NAME.py --preset smoke --seed 0
    simrig eval runs/.../policy.params --env envs/TASK_NAME.py --seed 0
    ```
 

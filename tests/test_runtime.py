@@ -6,10 +6,39 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from simrig.runtime import runtime_mismatches, verify_checkpoint_runtime
+from simrig.runtime import runtime_mismatches, training_provenance, verify_checkpoint_runtime
 
 
 class RuntimeCompatibilityTests(unittest.TestCase):
+    def test_training_provenance_hashes_custom_env_and_records_devices(self) -> None:
+        class Device:
+            id = 0
+            platform = "gpu"
+            device_kind = "test-gpu"
+
+        class Jax:
+            @staticmethod
+            def devices():
+                return [Device()]
+
+            @staticmethod
+            def default_backend():
+                return "gpu"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / "task.py"
+            env_path.write_text("ENV_NAME = 'task'\n", encoding="utf-8")
+            with (
+                patch("simrig.runtime.runtime_manifest", return_value={"python": "test"}),
+                patch("simrig.runtime._git_state", return_value={"commit": "abc"}),
+            ):
+                result = training_provenance(env_path, object(), jax=Jax())
+
+        self.assertEqual(result["jax"]["default_backend"], "gpu")
+        self.assertEqual(result["jax"]["devices"][0]["device_kind"], "test-gpu")
+        self.assertEqual(len(result["source"]["env_module_sha256"]), 64)
+        self.assertEqual(result["git"], {"commit": "abc"})
+
     def test_mismatch_compares_python_minor_and_packages(self) -> None:
         expected = {
             "python": "3.12.3",

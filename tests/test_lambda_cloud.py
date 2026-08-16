@@ -130,12 +130,33 @@ class LambdaCloudTests(unittest.TestCase):
         )
         remote = run.call_args.args[0][-1]
         self.assertIn("--preset smoke", remote)
+        self.assertIn("--impl auto", remote)
+        self.assertIn("--seed 0", remote)
         self.assertIn("nohup", remote)
         self.assertIn("train.log", remote)
         self.assertIn("train.pid", remote)
         self.assertIn("{ nohup", remote)
         syntax = subprocess.run(["sh", "-n", "-c", remote], check=False)
         self.assertEqual(syntax.returncode, 0)
+
+    def test_train_forwards_impl_seed_and_randomization_choice(self) -> None:
+        completed = subprocess.CompletedProcess([], 0)
+        with (
+            patch("simrig.lambda_cloud._check_local_requirements"),
+            patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+        ):
+            train_lambda(
+                LambdaSSHConfig("gpu.example"),
+                "Go1JoystickFlatTerrain",
+                impl="warp",
+                seed=11,
+                domain_randomization=False,
+            )
+
+        remote = run.call_args.args[0][-1]
+        self.assertIn("--impl warp", remote)
+        self.assertIn("--seed 11", remote)
+        self.assertIn("--no-domain-randomization", remote)
 
     def test_remote_smoke_checks_gpu_then_environment(self) -> None:
         completed = subprocess.CompletedProcess([], 0)

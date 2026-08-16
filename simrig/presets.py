@@ -56,6 +56,19 @@ PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+_SCALE_KEYS = (
+    "timesteps",
+    "num_envs",
+    "num_eval_envs",
+    "num_evals",
+    "episode_length",
+    "batch_size",
+    "unroll_length",
+    "num_minibatches",
+    "num_updates_per_batch",
+)
+
+
 def preset(name: str) -> dict[str, Any]:
     """Return a mutable copy of a named preset."""
     if name not in PRESETS:
@@ -64,8 +77,64 @@ def preset(name: str) -> dict[str, Any]:
     return dict(PRESETS[name])
 
 
+def apply_preset_scale(name: str, upstream: dict[str, Any]) -> dict[str, Any]:
+    """Bound an upstream PPO config for SimRig's smoke/local run sizes.
+
+    The cloud preset preserves the upstream task-specific configuration. Smoke
+    and local keep tuned optimizer, reward, and network settings while limiting
+    the expensive rollout/update dimensions.
+    """
+    resolved = dict(upstream)
+    if name == "cloud":
+        return resolved
+
+    limits = preset(name)
+    for key in _SCALE_KEYS:
+        if key not in limits:
+            continue
+        limit = limits[key]
+        current = resolved.get(key)
+        resolved[key] = min(current, limit) if current is not None else limit
+    return resolved
+
+
 def hidden_sizes(small_network: bool) -> tuple[int, ...]:
     return (64, 64) if small_network else (512, 256, 128)
+
+
+def legacy_network_factory(small_network: bool) -> dict[str, Any]:
+    """Return the network layout used by SimRig checkpoints before v0.4."""
+    sizes = hidden_sizes(small_network)
+    return {
+        "policy_hidden_layer_sizes": sizes,
+        "value_hidden_layer_sizes": sizes,
+        "policy_obs_key": "state",
+        "value_obs_key": "privileged_state",
+    }
+
+
+def resolve_network_factory(
+    checkpoint: Path | str,
+    *,
+    small_network: bool | None = None,
+) -> dict[str, Any]:
+    """Resolve exact PPO network kwargs recorded beside a checkpoint.
+
+    ``--small-network`` remains an explicit compatibility override for legacy
+    checkpoints. New runs persist their complete upstream/custom network
+    factory settings in ``config.json``.
+    """
+    if small_network is not None:
+        return legacy_network_factory(small_network)
+
+    config = checkpoint_config(checkpoint)
+    if config is not None and "network_factory" in config:
+        network = config["network_factory"]
+        if isinstance(network, dict):
+            return dict(network)
+
+    legacy_small = bool(config.get("small_network")) if config is not None else False
+    return legacy_network_factory(legacy_small)
 
 
 def resolve_small_network(
@@ -77,17 +146,20 @@ def resolve_small_network(
     if small_network is not None:
         return small_network
 
-    config_path = Path(checkpoint).resolve().parent / "config.json"
-    if not config_path.exists():
-        return False
-
-    try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-
-    config = data.get("config")
-    if isinstance(config, dict) and "small_network" in config:
+    config = checkpoint_config(checkpoint)
+    if config is not None and "small_network" in config:
         return bool(config["small_network"])
     return False
 
+
+def checkpoint_config(checkpoint: Path | str) -> dict[str, Any] | None:
+    """Load the resolved training config stored beside a checkpoint."""
+    config_path = Path(checkpoint).resolve().parent / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    config = data.get("config")
+    return config if isinstance(config, dict) else None

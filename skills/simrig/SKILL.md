@@ -105,13 +105,16 @@ Check available environments before writing a custom one:
 simrig list-envs --backend mujoco-playground
 simrig inspect-env ENV_NAME
 simrig smoke ENV_NAME --steps 10
-simrig train ENV_NAME --preset smoke
+simrig train ENV_NAME --preset smoke --impl auto --seed 0
 ```
 
 Use an existing environment only when its robot, task semantics, actions, and
 scene match the contract. Do not choose one solely because the robot name
 matches. Distinguish training over a command distribution from training only at
-one requested command.
+one requested command. Registered Playground tasks use their upstream tuned PPO
+and network configuration plus their declared domain randomizer. `--impl auto`
+uses the upstream implementation when supported and falls back from Warp to JAX
+when no JAX GPU is visible. Disable randomization only for an explicit baseline.
 
 ### 4. Build a custom scene or task
 
@@ -140,7 +143,7 @@ Run every gate and stop at the first failure:
 simrig validate-env envs/TASK_NAME.py
 simrig validate-env envs/TASK_NAME.py --runtime
 simrig smoke envs/TASK_NAME.py --steps 10
-simrig train envs/TASK_NAME.py --preset smoke
+simrig train envs/TASK_NAME.py --preset smoke --seed 0
 ```
 
 Treat static validation as a structure check only. Treat runtime validation as
@@ -165,6 +168,8 @@ it without an explicit compute destination and user approval. Use
 `--timesteps`, `--num-envs`, and `--batch-size` for intentional overrides.
 Record the exact run directory and preserve its `config.json`,
 `final_metrics.json`, checkpoints, and `policy.params`.
+Every new run should record the resolved implementation, seed, network,
+randomizer, source hashes, Git state, device inventory, and runtime versions.
 
 For an already-provisioned Lambda On-Demand Cloud GPU, read
 [lambda-cloud.md](references/lambda-cloud.md). Use `simrig cloud lambda connect`

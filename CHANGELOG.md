@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Resolve registered MuJoCo Playground training from each task's tuned Brax PPO
+  and network configuration while preserving SimRig's bounded smoke/local gates.
+- Add `--impl auto|jax|warp`, GPU-aware Warp fallback, reproducible `--seed`,
+  and opt-out domain randomization for local and Lambda training.
+- Record the resolved implementation, network, randomizer, source hashes, Git
+  state, JAX devices, precision environment, and exact CLI overrides in every run.
+- Reconstruct recorded implementations and network layouts for eval, demo, and
+  browser preview, while preserving legacy checkpoint compatibility.
+- Add a full pinned Playground CI job that validates, smokes, trains, and reloads
+  the custom reaching example.
+
 ## 0.3.0 - 2026-08-01
 
 - Add an SSH-based Lambda On-Demand Cloud workflow with connection and GPU

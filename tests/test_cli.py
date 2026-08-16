@@ -173,6 +173,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(evaluate.call_args.kwargs["command"], (0.8, 0.0, 0.0))
         self.assertFalse(evaluate.call_args.kwargs["allow_runtime_mismatch"])
 
+    def test_train_passes_impl_seed_and_randomization_choice(self) -> None:
+        with patch("simrig.cli.train_ppo") as train:
+            train.return_value.output_dir = "runs/test"
+            code, _, _ = _run_cli(
+                [
+                    "train",
+                    "Go1JoystickFlatTerrain",
+                    "--impl",
+                    "warp",
+                    "--seed",
+                    "12",
+                    "--no-domain-randomization",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(train.call_args.kwargs["impl"], "warp")
+        self.assertEqual(train.call_args.kwargs["seed"], 12)
+        self.assertFalse(train.call_args.kwargs["domain_randomization"])
+
     def test_eval_can_explicitly_allow_runtime_mismatch(self) -> None:
         with (
             patch("simrig.cli.resolve_policy_checkpoint", return_value=Path("policy.params")),
@@ -256,6 +276,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.env_name, "Go1JoystickFlatTerrain")
         self.assertEqual(args.identity, Path("lambda.pem"))
         self.assertEqual(args.preset, "smoke")
+        self.assertEqual(args.impl, "auto")
+        self.assertEqual(args.seed, 0)
+        self.assertTrue(args.domain_randomization)
         self.assertTrue(args.detach)
 
     def test_lambda_prepare_accepts_remote_python(self) -> None:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from importlib import metadata
 import json
+import os
 from pathlib import Path
 import platform
+import subprocess
 from typing import Any
 import warnings
 
@@ -39,6 +42,56 @@ def runtime_manifest() -> dict[str, Any]:
         "python_implementation": platform.python_implementation(),
         "platform": platform.platform(),
         "packages": packages,
+    }
+
+
+def training_provenance(
+    env_ref: Path | str,
+    env: Any,
+    *,
+    jax: Any,
+) -> dict[str, Any]:
+    """Capture reproducibility-relevant source, device, and process details."""
+    source: dict[str, Any] = {"env_ref": str(env_ref)}
+    env_path = Path(str(env_ref)).expanduser()
+    if env_path.is_file():
+        source["env_module_path"] = str(env_path.resolve())
+        source["env_module_sha256"] = _sha256(env_path)
+
+    xml_path = getattr(env, "xml_path", None)
+    if xml_path is not None:
+        model_path = Path(str(xml_path)).expanduser()
+        source["model_xml_path"] = str(model_path.resolve())
+        if model_path.is_file():
+            source["model_xml_sha256"] = _sha256(model_path)
+
+    devices = []
+    for device in jax.devices():
+        devices.append(
+            {
+                "id": getattr(device, "id", None),
+                "platform": getattr(device, "platform", None),
+                "device_kind": getattr(device, "device_kind", None),
+            }
+        )
+
+    return {
+        "runtime": runtime_manifest(),
+        "source": source,
+        "git": _git_state(Path.cwd()),
+        "jax": {
+            "default_backend": jax.default_backend(),
+            "devices": devices,
+        },
+        "environment": {
+            key: os.environ.get(key)
+            for key in (
+                "CUDA_VISIBLE_DEVICES",
+                "JAX_DEFAULT_MATMUL_PRECISION",
+                "JAX_PLATFORMS",
+                "MUJOCO_GL",
+            )
+        },
     }
 
 
@@ -132,3 +185,44 @@ def _major_minor(version: str) -> tuple[int, int] | None:
         return int(major), int(minor)
     except (TypeError, ValueError):
         return None
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_state(path: Path) -> dict[str, Any] | None:
+    try:
+        root = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=path,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout.strip()
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"root": root, "commit": commit, "dirty": dirty}

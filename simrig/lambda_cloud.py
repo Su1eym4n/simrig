@@ -223,11 +223,18 @@ def train_lambda(
     timesteps: int | None = None,
     num_envs: int | None = None,
     batch_size: int | None = None,
+    impl: str = "auto",
+    seed: int = 0,
+    domain_randomization: bool = True,
 ) -> LambdaTrainResult:
     """Run SimRig training on a prepared Lambda instance."""
     _check_local_requirements(config, commands=("ssh",))
     if preset_name not in {"smoke", "local", "cloud"}:
         raise ValueError("Preset must be one of: smoke, local, cloud")
+    if impl not in {"auto", "jax", "warp"}:
+        raise ValueError("Implementation must be one of: auto, jax, warp")
+    if seed < 0:
+        raise ValueError("Training seed must be non-negative.")
     remote_root = _resolve_remote_dir(config, remote_dir)
     relative_output = output or (
         f"runs/{timestamp()}-{slugify(env_name)}-{slugify(preset_name)}"
@@ -242,7 +249,13 @@ def train_lambda(
         preset_name,
         "--output",
         remote_output,
+        "--impl",
+        impl,
+        "--seed",
+        str(seed),
     ]
+    if not domain_randomization:
+        train.append("--no-domain-randomization")
     for flag, value in (
         ("--timesteps", timesteps),
         ("--num-envs", num_envs),
