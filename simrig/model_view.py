@@ -25,7 +25,12 @@ from simrig.browser_shell import (
     viewer_styles,
 )
 from simrig.mujoco_backend import _import_mujoco, resolve_model_path
-from simrig.rendering import CameraState, make_tracking_camera, tracking_body_id
+from simrig.rendering import (
+    CameraState,
+    configure_headless_mujoco_gl,
+    make_tracking_camera,
+    tracking_body_id,
+)
 from simrig.three_scene import camera_transforms, geom_transforms, scene_payload
 
 
@@ -181,6 +186,7 @@ class ModelViewSession:
         fps: int = 24,
     ) -> None:
         self.model_path = resolve_model_path(model_or_xml, menagerie)
+        configure_headless_mujoco_gl()
         self.mujoco = _import_mujoco()
         try:
             from PIL import Image  # type: ignore
@@ -224,6 +230,10 @@ class ModelViewSession:
         self.agent_camera_names = named_camera_names(self.mujoco, self.model)
         self.agent_camera_name = self._initial_agent_camera(camera)
         self._agent_frame_pump: MujocoFramePump | None = None
+        self._agent_pump_lock = threading.Lock()
+        self._agent_width = min(360, max(160, width))
+        self._agent_height = max(120, round(self._agent_width * 3 / 4))
+        self._agent_fps = min(12, max(1, int(fps)))
         if self.render_mode != "threejs":
             self._frame_pump = MujocoFramePump(
                 self.mujoco,
@@ -239,22 +249,6 @@ class ModelViewSession:
                 scene_lock=self._lock,
                 fallback_frame=self._fallback_frame,
                 error_frame=self._error_frame,
-            )
-        elif self.agent_camera_name is not None:
-            agent_width = min(360, max(160, width))
-            agent_height = max(120, round(agent_width * 3 / 4))
-            self._agent_frame_pump = MujocoFramePump(
-                self.mujoco,
-                self.model,
-                self.data,
-                width=agent_width,
-                height=agent_height,
-                camera=self._agent_camera_ref(self.agent_camera_name),
-                camera_state=CameraState(interactive=False),
-                image_module=self.Image,
-                fps=min(12, max(1, int(fps))),
-                render_mode="mujoco",
-                scene_lock=self._lock,
             )
 
     def reset(self) -> None:
@@ -387,7 +381,7 @@ class ModelViewSession:
         stats = (
             self._agent_frame_pump.stats()
             if self._agent_frame_pump is not None
-            else {"fps_target": 0, "renderer_error": None}
+            else {"fps_target": self._agent_fps, "renderer_error": None}
         )
         return {
             "cameras": list(self.agent_camera_names),
@@ -401,16 +395,36 @@ class ModelViewSession:
         if name not in self.agent_camera_names:
             choices = ", ".join(self.agent_camera_names) or "none"
             raise ValueError(f"Unknown agent camera: {name}. Available: {choices}")
-        if self._agent_frame_pump is None:
-            raise RuntimeError("Agent camera streaming is unavailable.")
         self.agent_camera_name = name
-        self._agent_frame_pump.select_fixed_camera(self._agent_camera_ref(name))
+        if self._agent_frame_pump is not None:
+            self._agent_frame_pump.select_fixed_camera(self._agent_camera_ref(name))
         return self.agent_cameras_payload()
 
     def agent_frame_jpeg(self) -> bytes:
-        if self._agent_frame_pump is None:
+        pump = self._ensure_agent_frame_pump()
+        if pump is None:
             raise RuntimeError("No authored MuJoCo cameras are available.")
-        return self._agent_frame_pump.get_jpeg()
+        return pump.get_jpeg()
+
+    def _ensure_agent_frame_pump(self) -> MujocoFramePump | None:
+        if self.agent_camera_name is None:
+            return None
+        with self._agent_pump_lock:
+            if self._agent_frame_pump is None:
+                self._agent_frame_pump = MujocoFramePump(
+                    self.mujoco,
+                    self.model,
+                    self.data,
+                    width=self._agent_width,
+                    height=self._agent_height,
+                    camera=self._agent_camera_ref(self.agent_camera_name),
+                    camera_state=CameraState(interactive=False),
+                    image_module=self.Image,
+                    fps=self._agent_fps,
+                    render_mode="mujoco",
+                    scene_lock=self._lock,
+                )
+            return self._agent_frame_pump
 
     def close(self) -> None:
         if self._frame_pump is not None:

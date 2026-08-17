@@ -50,6 +50,17 @@ def preferred_gl_backends() -> list[str | None]:
     return ["osmesa", "egl", None]
 
 
+def configure_headless_mujoco_gl() -> str | None:
+    """Select EGL before MuJoCo import when Linux has no display server."""
+
+    if os.environ.get("MUJOCO_GL"):
+        return os.environ["MUJOCO_GL"]
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        os.environ["MUJOCO_GL"] = "egl"
+        return "egl"
+    return None
+
+
 def ensure_offscreen_framebuffer(model: Any, *, height: int, width: int) -> None:
     """Grow MuJoCo's offscreen buffer so browser frames can exceed 640x480."""
 

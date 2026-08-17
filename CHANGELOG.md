@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep Three.js previews headless-safe by lazily starting the optional native
+  Sensor renderer and selecting EGL before MuJoCo import on display-less Linux.
 - Pin the tested Warp 1.13 runtime and bridge MuJoCo 3.10's stale internal
   `GraphMode` import so CUDA vision environments can construct and step. The
   vision reference also normalizes Warp's unbatched singleton renderer axis so

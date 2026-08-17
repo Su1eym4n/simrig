@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from simrig.cli import build_parser
 from simrig.browser_render import named_camera_names
-from simrig.rendering import CameraState, ensure_offscreen_framebuffer, preferred_gl_backends
+from simrig.rendering import (
+    CameraState,
+    configure_headless_mujoco_gl,
+    ensure_offscreen_framebuffer,
+    preferred_gl_backends,
+)
 
 
 class RenderingTests(unittest.TestCase):
@@ -59,6 +66,14 @@ class RenderingTests(unittest.TestCase):
     def test_preferred_gl_backends_on_darwin(self) -> None:
         backends = preferred_gl_backends()
         self.assertTrue(backends)
+
+    def test_headless_linux_selects_egl_before_mujoco_import(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "simrig.rendering.sys.platform",
+            "linux",
+        ):
+            self.assertEqual(configure_headless_mujoco_gl(), "egl")
+            self.assertEqual(os.environ["MUJOCO_GL"], "egl")
 
     def test_ensure_offscreen_framebuffer_grows_model_buffer(self) -> None:
         class Global:

@@ -105,7 +105,10 @@ class ModelViewTests(unittest.TestCase):
             pump = MagicMock()
             pump.stats.return_value = {"fps_target": 12, "renderer_error": None}
             pump.get_jpeg.return_value = b"jpeg"
-            with patch("simrig.model_view.MujocoFramePump", return_value=pump):
+            with patch(
+                "simrig.model_view.MujocoFramePump",
+                return_value=pump,
+            ) as mocked_pump:
                 try:
                     session = ModelViewSession(xml, render_mode="threejs", camera="fixed")
                 except (ImportError, RuntimeError) as exc:
@@ -114,7 +117,10 @@ class ModelViewTests(unittest.TestCase):
                     payload = session.agent_cameras_payload()
                     self.assertEqual(payload["cameras"], ["fixed", "wrist"])
                     self.assertEqual(payload["selected"], "fixed")
+                    self.assertEqual(payload["fps_target"], 12)
+                    mocked_pump.assert_not_called()
                     self.assertEqual(session.agent_frame_jpeg(), b"jpeg")
+                    mocked_pump.assert_called_once()
 
                     scene = session.scene_payload()
                     authored = scene["authored_cameras"]
