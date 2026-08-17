@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Pin the tested Warp 1.13 runtime and bridge MuJoCo 3.10's stale internal
-  `GraphMode` import so CUDA vision environments can construct and step.
+  `GraphMode` import so CUDA vision environments can construct and step. The
+  vision reference also normalizes Warp's unbatched singleton renderer axis so
+  checkpoint evaluation receives logical HWC pixels.
 - Show live, selectable named cameras inside Three.js model and policy previews:
   an authored-pose/FOV Three.js emulation by default, plus a native MuJoCo
   sensor comparison, while preserving the independent human orbit camera.

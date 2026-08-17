@@ -121,8 +121,14 @@ class CustomEnv(cartpole.Balance):
     ) -> dict[str, jax.Array]:
         # SECTION: observations
         privileged = jp.concatenate([last_action, self._get_obs(data, {})])
+        pixel_obs = pixels["pixels/view_0"]
+        # An unbatched Warp renderer exposes its one internal world as a
+        # leading singleton axis.  Remove only that axis so eval/inference sees
+        # logical HWC pixels; vectorized training keeps its real batch axis.
+        if pixel_obs.ndim == 4 and pixel_obs.shape[0] == 1:
+            pixel_obs = pixel_obs[0]
         return {
-            "pixels/view_0": pixels["pixels/view_0"],
+            "pixels/view_0": pixel_obs,
             "state": last_action,
             "privileged_state": privileged,
         }
