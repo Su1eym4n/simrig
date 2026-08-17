@@ -6,7 +6,9 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Mapping
+
+from simrig.networks import normalize_network_spec
 
 
 def is_env_module_path(env_ref: str | Path) -> bool:
@@ -40,6 +42,26 @@ def import_env_module(path: Path | str) -> ModuleType:
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_custom_env_metadata(path: Path | str) -> dict[str, Any]:
+    """Load declarative metadata without constructing the environment.
+
+    Supported optional module hooks are ``network_spec()``, ``vision_spec()``,
+    and ``training_config()``. Uppercase mapping constants with the same names
+    are also accepted for simple modules.
+    """
+    module = import_env_module(path)
+    default_config = _call_optional_mapping(module, "default_config")
+    network_value = _call_or_value(module, "network_spec", "NETWORK_SPEC")
+    vision_value = _call_or_value(module, "vision_spec", "VISION_SPEC")
+    training_value = _call_or_value(module, "training_config", "TRAINING_CONFIG")
+    return {
+        "default_config": default_config,
+        "network_spec": normalize_network_spec(network_value),
+        "vision_spec": _mapping_or_empty(vision_value, "vision_spec"),
+        "training_config": _mapping_or_empty(training_value, "training_config"),
+    }
 
 
 def load_custom_env(
@@ -107,3 +129,33 @@ def _construct_env(cls: type, *, config: Any, config_overrides: dict[str, Any] |
                 f"Could not construct {cls.__name__} with config/config_overrides. "
                 "Prefer make_env(config_overrides=...) in the module."
             ) from exc
+
+
+def _call_optional_mapping(module: ModuleType, name: str) -> dict[str, Any]:
+    value = getattr(module, name, None)
+    if value is None:
+        return {}
+    if callable(value):
+        value = value()
+    return _mapping_or_empty(value, name)
+
+
+def _call_or_value(module: ModuleType, function_name: str, constant_name: str) -> Any:
+    value = getattr(module, function_name, None)
+    if callable(value):
+        return value()
+    if value is not None:
+        return value
+    return getattr(module, constant_name, None)
+
+
+def _mapping_or_empty(value: Any, label: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            value = to_dict()
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must return a mapping.")
+    return dict(value)

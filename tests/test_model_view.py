@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 from simrig.cli import build_parser
 
@@ -34,6 +35,16 @@ KEYFRAME_XML = """\
   <keyframe>
     <key name="home" qpos="0.75"/>
   </keyframe>
+</mujoco>
+"""
+
+CAMERA_XML = """\
+<mujoco model="camera_test">
+  <worldbody>
+    <camera name="fixed" pos="0 -2 1" zaxis="0 -1 0"/>
+    <camera name="wrist" pos="1 -1 1" zaxis="1 -1 0"/>
+    <body name="body"><geom type="sphere" size="0.1"/></body>
+  </worldbody>
 </mujoco>
 """
 
@@ -75,7 +86,48 @@ class ModelViewTests(unittest.TestCase):
         self.assertIn("three@0.184.0", page)
         self.assertIn("OrbitControls", page)
         self.assertIn("/scene.json", page)
+        self.assertIn("/agent-cameras.json", page)
+        self.assertIn("/agent-frame.jpg", page)
+        self.assertIn('id="agent-camera-panel"', page)
+        self.assertIn('id="agent-camera-three"', page)
+        self.assertIn('<option value="emulated" selected>Emulated</option>', page)
+        self.assertIn('<option value="sensor">Sensor</option>', page)
+        self.assertIn("new THREE.PerspectiveCamera(45, 4 / 3", page)
+        self.assertIn("authored.fovy", page)
         self.assertIn('id="three-view"', page)
+
+    def test_threejs_view_exposes_named_agent_cameras(self) -> None:
+        from simrig.model_view import ModelViewSession
+
+        with tempfile.TemporaryDirectory() as tmp:
+            xml = Path(tmp) / "camera.xml"
+            xml.write_text(CAMERA_XML, encoding="utf-8")
+            pump = MagicMock()
+            pump.stats.return_value = {"fps_target": 12, "renderer_error": None}
+            pump.get_jpeg.return_value = b"jpeg"
+            with patch("simrig.model_view.MujocoFramePump", return_value=pump):
+                try:
+                    session = ModelViewSession(xml, render_mode="threejs", camera="fixed")
+                except (ImportError, RuntimeError) as exc:
+                    self.skipTest(str(exc))
+                try:
+                    payload = session.agent_cameras_payload()
+                    self.assertEqual(payload["cameras"], ["fixed", "wrist"])
+                    self.assertEqual(payload["selected"], "fixed")
+                    self.assertEqual(session.agent_frame_jpeg(), b"jpeg")
+
+                    scene = session.scene_payload()
+                    authored = scene["authored_cameras"]
+                    self.assertEqual([item["name"] for item in authored], ["fixed", "wrist"])
+                    self.assertEqual(authored[0]["position"], [0.0, -2.0, 1.0])
+                    self.assertAlmostEqual(authored[0]["fovy"], 45.0)
+                    self.assertEqual(len(authored[0]["matrix"]), 9)
+
+                    selected = session.select_agent_camera("wrist")
+                    self.assertEqual(selected["selected"], "wrist")
+                    pump.select_fixed_camera.assert_called_once_with("wrist")
+                finally:
+                    session.close()
 
     def test_joint_controls_use_joint_names_when_mujoco_available(self) -> None:
         try:

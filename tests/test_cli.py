@@ -106,8 +106,11 @@ class CliTests(unittest.TestCase):
 
     def test_cli_validate_env_runtime_flag_parses(self) -> None:
         parser = build_parser()
-        args = parser.parse_args(["validate-env", "envs/reach.py", "--runtime"])
+        args = parser.parse_args(
+            ["validate-env", "envs/reach.py", "--runtime", "--vision"]
+        )
         self.assertTrue(args.runtime)
+        self.assertTrue(args.vision)
         self.assertEqual(args.path, Path("envs/reach.py"))
 
     def test_demo_command_parses_policy_env_and_command(self) -> None:

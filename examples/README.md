@@ -26,3 +26,28 @@ simrig validate-env examples/demo_reach.py --runtime
 simrig smoke examples/demo_reach.py --steps 10
 simrig train examples/demo_reach.py --preset smoke
 ```
+
+## vision_cartpole
+
+[`vision_cartpole.py`](vision_cartpole.py) is the smallest end-to-end vision
+reference. It uses MuJoCo's actual MJX camera renderer, a three-frame grayscale
+stack, Brax's vision CNN PPO network, and asymmetric actor/critic state keys.
+
+Static contract validation works on any supported machine:
+
+```bash
+simrig validate-env examples/vision_cartpole.py --vision
+```
+
+Runtime rendering and training require a JAX-visible CUDA GPU plus MuJoCo Warp:
+
+```bash
+simrig validate-env examples/vision_cartpole.py --runtime --vision
+simrig smoke examples/vision_cartpole.py --steps 5
+simrig train examples/vision_cartpole.py --preset smoke \
+  --output runs/vision-cartpole-smoke
+simrig eval runs/vision-cartpole-smoke/policy.params \
+  --env examples/vision_cartpole.py --steps 250
+simrig preview runs/vision-cartpole-smoke/policy.params \
+  --env examples/vision_cartpole.py --port 8765
+```

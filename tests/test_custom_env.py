@@ -4,7 +4,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from simrig.custom_env import is_env_module_path, load_custom_env, resolve_env_label
+from simrig.custom_env import (
+    is_env_module_path,
+    load_custom_env,
+    load_custom_env_metadata,
+    resolve_env_label,
+)
 from simrig.scaffold import new_env
 from simrig.validate_env import validate_env
 
@@ -96,6 +101,30 @@ class CustomEnvLoaderTests(unittest.TestCase):
             self.assertEqual(env.action_size, 2)
             self.assertEqual(env.config["impl"], "jax")
             self.assertIn("state", env.observation_size)
+
+    def test_load_custom_env_metadata_supports_vision_hooks(self) -> None:
+        source = MINIMAL_ENV + '''\
+
+def network_spec():
+    return {"type": "vision_cnn", "factory": {"policy_obs_key": "state"}}
+
+VISION_SPEC = {"pixel_keys": ["pixels/view_0"], "requires_impl": "warp"}
+
+def training_config():
+    return {"num_timesteps": 1000, "vision": True}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.py"
+            path.write_text(source, encoding="utf-8")
+
+            metadata = load_custom_env_metadata(path)
+
+        self.assertEqual(metadata["network_spec"]["type"], "vision_cnn")
+        self.assertEqual(
+            metadata["network_spec"]["factory"]["policy_obs_key"], "state"
+        )
+        self.assertEqual(metadata["vision_spec"]["requires_impl"], "warp")
+        self.assertEqual(metadata["training_config"]["num_timesteps"], 1000)
 
 
 class ValidateRuntimeTests(unittest.TestCase):

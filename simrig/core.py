@@ -67,6 +67,8 @@ class EnvInspectionReport:
     model_bodies: int | None = None
     model_actuators: int | None = None
     has_domain_randomizer: bool | None = None
+    network_type: str | None = None
+    vision: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -141,4 +143,3 @@ def report_markdown(title: str, report: Any) -> str:
         lines.append(f"- **{label}:** {rendered}")
     lines.append("")
     return "\n".join(lines)
-

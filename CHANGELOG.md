@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Show live, selectable named cameras inside Three.js model and policy previews:
+  an authored-pose/FOV Three.js emulation by default, plus a native MuJoCo
+  sensor comparison, while preserving the independent human orbit camera.
+- Add declarative custom-env vision CNN selection across train/eval/demo/preview,
+  rendered-frame validation with CUDA/Warp capability reporting, and a complete
+  MJX-rendered cartpole vision PPO reference.
 - Resolve registered MuJoCo Playground training from each task's tuned Brax PPO
   and network configuration while preserving SimRig's bounded smoke/local gates.
 - Add `--impl auto|jax|warp`, GPU-aware Warp fallback, reproducible `--seed`,

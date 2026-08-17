@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from simrig.cli import build_parser
+from simrig.browser_render import named_camera_names
 from simrig.rendering import CameraState, ensure_offscreen_framebuffer, preferred_gl_backends
 
 
@@ -29,6 +30,11 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("three@0.184.0", page)
         self.assertIn("/scene.json", page)
         self.assertIn("/state.json", page)
+        self.assertIn("/agent-cameras.json", page)
+        self.assertIn("/agent-frame.jpg", page)
+        self.assertIn('id="agent-camera-three"', page)
+        self.assertIn("updateAuthoredCameras(status.authored_cameras)", page)
+        self.assertIn("renderAgentCameraEmulation()", page)
         self.assertIn("followRobot", page)
         self.assertIn('id="three-view"', page)
 
@@ -84,6 +90,19 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(state.azimuth, 140.0)
         self.assertEqual(state.elevation, -10.0)
         self.assertEqual(state.distance, 3.5)
+
+    def test_named_camera_names_reads_authored_mujoco_cameras(self) -> None:
+        try:
+            import mujoco
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        model = mujoco.MjModel.from_xml_string(
+            '<mujoco><worldbody><camera name="front"/><camera name="wrist"/>'
+            '<geom type="sphere" size="0.1"/></worldbody></mujoco>'
+        )
+
+        self.assertEqual(named_camera_names(mujoco, model), ["front", "wrist"])
 
 
 if __name__ == "__main__":

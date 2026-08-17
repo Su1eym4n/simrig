@@ -35,6 +35,7 @@ def scene_payload(
         "meshes": [_mesh_payload(mujoco, model, mesh_id) for mesh_id in used_mesh_ids],
         "geoms": [_geom_payload(mujoco, model, geom_id) for geom_id in visible_geom_ids],
         "transforms": geom_transforms(model, data),
+        "authored_cameras": camera_transforms(mujoco, model, data),
     }
 
 
@@ -49,6 +50,30 @@ def geom_transforms(model: Any, data: Any) -> list[dict[str, Any]]:
         }
         for geom_id in range(model.ngeom)
     ]
+
+
+def camera_transforms(mujoco: Any, model: Any, data: Any) -> list[dict[str, Any]]:
+    """Return authored cameras with their current world pose and vertical FOV."""
+
+    cameras = []
+    for camera_id in range(model.ncam):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_id)
+        cameras.append(
+            {
+                "id": camera_id,
+                "name": name or f"camera_{camera_id}",
+                "fovy": float(model.cam_fovy[camera_id]),
+                "position": np.asarray(
+                    data.cam_xpos[camera_id],
+                    dtype=float,
+                ).tolist(),
+                "matrix": np.asarray(
+                    data.cam_xmat[camera_id],
+                    dtype=float,
+                ).reshape(-1).tolist(),
+            }
+        )
+    return cameras
 
 
 def _mesh_payload(mujoco: Any, model: Any, mesh_id: int) -> dict[str, Any]:

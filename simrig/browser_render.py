@@ -20,6 +20,19 @@ def encode_jpeg(image_module: Any, frame: np.ndarray, *, quality: int = 72) -> b
     return output.getvalue()
 
 
+def named_camera_names(mujoco: Any, model: Any) -> list[str]:
+    """Return stable names for authored MuJoCo cameras."""
+    names: list[str] = []
+    for camera_id in range(int(model.ncam)):
+        name = mujoco.mj_id2name(
+            model,
+            mujoco.mjtObj.mjOBJ_CAMERA,
+            camera_id,
+        )
+        names.append(name or f"camera_{camera_id}")
+    return names
+
+
 class MujocoFramePump:
     """Render MuJoCo frames on a dedicated thread and serve cached JPEGs."""
 
@@ -69,6 +82,12 @@ class MujocoFramePump:
         with self._camera_lock:
             self.camera_state.update_from_query(query)
             self.camera_state.apply(self.camera)
+
+    def select_fixed_camera(self, camera: str | int) -> None:
+        """Switch to an authored camera while the render thread is running."""
+        with self._camera_lock:
+            self.camera = camera
+            self.camera_state = CameraState(interactive=False)
 
     def get_jpeg(self) -> bytes:
         return self._latest_jpeg

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import gzip
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import functools
 import json
 from pathlib import Path
 import threading
@@ -16,19 +15,29 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from simrig.browser_render import MujocoFramePump
-from simrig.browser_shell import camera_interaction_script, frame_poll_script, viewer_styles
+from simrig.browser_render import MujocoFramePump, named_camera_names
+from simrig.browser_shell import (
+    agent_camera_panel,
+    agent_camera_script,
+    agent_camera_styles,
+    camera_interaction_script,
+    frame_poll_script,
+    threejs_agent_camera_script,
+    viewer_styles,
+)
+from simrig.networks import make_network_factory
 from simrig.playground_backend import (
     _apply_command,
     _checkpoint_env_overrides,
+    _ensure_checkpoint_vision_runtime,
     _import_training_deps,
     _validate_backend,
     load_env,
 )
-from simrig.presets import resolve_network_factory
-from simrig.rendering import make_tracking_camera, tracking_body_id
+from simrig.presets import resolve_network_factory, resolve_network_type
+from simrig.rendering import CameraState, make_tracking_camera, tracking_body_id
 from simrig.runtime import verify_checkpoint_runtime
-from simrig.three_scene import geom_transforms, scene_payload
+from simrig.three_scene import camera_transforms, geom_transforms, scene_payload
 
 
 @dataclass
@@ -73,6 +82,7 @@ class PolicyPreviewSession:
             checkpoint,
             allow_mismatch=allow_runtime_mismatch,
         )
+        _ensure_checkpoint_vision_runtime(checkpoint)
         self.env_name = env_name
         self.checkpoint = str(checkpoint)
         self.backend = backend
@@ -117,9 +127,10 @@ class PolicyPreviewSession:
             checkpoint,
             small_network=small_network,
         )
-        network_factory = functools.partial(
-            self.ppo_networks.make_ppo_networks,
-            **network_config,
+        network_factory = make_network_factory(
+            resolve_network_type(checkpoint),
+            network_config,
+            ppo_networks=self.ppo_networks,
         )
         networks = network_factory(
             self.env.observation_size,
@@ -150,9 +161,28 @@ class PolicyPreviewSession:
             camera,
         )
         self._frame_pump: MujocoFramePump | None = None
+        self.agent_camera_names = named_camera_names(self.mujoco, self.env.mj_model)
+        self.agent_camera_name = self._initial_agent_camera(camera)
+        self._agent_frame_pump: MujocoFramePump | None = None
         self._rollout_thread: threading.Thread | None = None
         self._running = True
         if self.render_mode == "threejs":
+            if self.agent_camera_name is not None:
+                agent_width = min(360, max(160, width))
+                agent_height = max(120, round(agent_width * 3 / 4))
+                self._agent_frame_pump = MujocoFramePump(
+                    self.mujoco,
+                    self.env.mj_model,
+                    self.mj_data,
+                    width=agent_width,
+                    height=agent_height,
+                    camera=self._agent_camera_ref(self.agent_camera_name),
+                    camera_state=CameraState(interactive=False),
+                    image_module=self.Image,
+                    fps=min(12, self.fps),
+                    render_mode="mujoco",
+                    scene_lock=self._lock,
+                )
             self._rollout_thread = threading.Thread(
                 target=self._run_rollout,
                 name="simrig-preview-rollout",
@@ -213,6 +243,11 @@ class PolicyPreviewSession:
             payload = self._status_unlocked().__dict__
             payload.update(self._renderer_stats())
             payload["transforms"] = geom_transforms(self.env.mj_model, self.mj_data)
+            payload["authored_cameras"] = camera_transforms(
+                self.mujoco,
+                self.env.mj_model,
+                self.mj_data,
+            )
             payload["tracking_position"] = np.asarray(
                 self.mj_data.xpos[self._tracking_body_id()],
                 dtype=float,
@@ -229,9 +264,15 @@ class PolicyPreviewSession:
                     model_name=self.env_name,
                 )
                 self._scene_payload.pop("transforms", None)
+                self._scene_payload.pop("authored_cameras", None)
             return {
                 **self._scene_payload,
                 "transforms": geom_transforms(self.env.mj_model, self.mj_data),
+                "authored_cameras": camera_transforms(
+                    self.mujoco,
+                    self.env.mj_model,
+                    self.mj_data,
+                ),
                 "tracking_position": np.asarray(
                     self.mj_data.xpos[self._tracking_body_id()],
                     dtype=float,
@@ -276,12 +317,62 @@ class PolicyPreviewSession:
             raise RuntimeError("Frame streaming is disabled in threejs mode.")
         return self._frame_pump.get_jpeg()
 
+    def agent_cameras_payload(self) -> dict[str, Any]:
+        stats = (
+            self._agent_frame_pump.stats()
+            if self._agent_frame_pump is not None
+            else {"fps_target": 0, "renderer_error": None}
+        )
+        return {
+            "cameras": list(self.agent_camera_names),
+            "selected": self.agent_camera_name,
+            "fps_target": stats["fps_target"],
+            "renderer_error": stats["renderer_error"],
+            "source": "mujoco-offscreen",
+        }
+
+    def select_agent_camera(self, name: str) -> dict[str, Any]:
+        if name not in self.agent_camera_names:
+            choices = ", ".join(self.agent_camera_names) or "none"
+            raise ValueError(f"Unknown agent camera: {name}. Available: {choices}")
+        if self._agent_frame_pump is None:
+            raise RuntimeError("Agent camera streaming is unavailable.")
+        self.agent_camera_name = name
+        self._agent_frame_pump.select_fixed_camera(self._agent_camera_ref(name))
+        return self.agent_cameras_payload()
+
+    def agent_frame_jpeg(self) -> bytes:
+        if self._agent_frame_pump is None:
+            raise RuntimeError("No authored MuJoCo cameras are available.")
+        return self._agent_frame_pump.get_jpeg()
+
     def close(self) -> None:
         self._running = False
         if self._frame_pump is not None:
             self._frame_pump.close()
+        if self._agent_frame_pump is not None:
+            self._agent_frame_pump.close()
         if self._rollout_thread is not None:
             self._rollout_thread.join(timeout=2.0)
+
+    def _initial_agent_camera(self, requested: str | int | None) -> str | None:
+        if not self.agent_camera_names:
+            return None
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(self.agent_camera_names):
+                return self.agent_camera_names[index]
+        if isinstance(requested, str) and requested in self.agent_camera_names:
+            return requested
+        return self.agent_camera_names[0]
+
+    def _agent_camera_ref(self, name: str) -> str | int:
+        camera_id = self.mujoco.mj_name2id(
+            self.env.mj_model,
+            self.mujoco.mjtObj.mjOBJ_CAMERA,
+            name,
+        )
+        return name if camera_id >= 0 else self.agent_camera_names.index(name)
 
     def _run_rollout(self) -> None:
         interval = 1.0 / self.fps
@@ -463,6 +554,20 @@ def serve_policy_preview(
                     self.send_error(HTTPStatus.NOT_FOUND, "Frame streaming disabled")
                 else:
                     self._send_bytes(session.frame_jpeg(), "image/jpeg")
+            elif parsed.path == "/agent-frame.jpg":
+                try:
+                    self._send_bytes(session.agent_frame_jpeg(), "image/jpeg")
+                except RuntimeError as exc:
+                    self.send_error(HTTPStatus.NOT_FOUND, str(exc))
+            elif parsed.path == "/agent-cameras.json":
+                self._send_json(session.agent_cameras_payload())
+            elif parsed.path == "/agent-camera":
+                query = parse_qs(parsed.query)
+                name = query.get("name", [""])[0]
+                try:
+                    self._send_json(session.select_agent_camera(name))
+                except (RuntimeError, ValueError) as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             elif parsed.path == "/scene.json":
                 self._send_json(session.scene_payload(), compress=True)
             elif parsed.path == "/state.json":
@@ -561,6 +666,7 @@ def _threejs_html() -> str:
   <title>SimRig Preview</title>
   <style>"""
         + viewer_styles(sidebar_width=320)
+        + agent_camera_styles()
         + """
     #three-view { width: 100%; height: 100%; display: block; outline: none; }
     #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #cbd5e1; background: #070b12; z-index: 2; }
@@ -580,6 +686,9 @@ def _threejs_html() -> str:
       <canvas id="three-view" aria-label="Interactive SimRig policy preview"></canvas>
       <div id="loading">Loading rollout scene…</div>
       <div id="hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+"""
+        + agent_camera_panel()
+        + """
     </div>
   </main>
   <aside>
@@ -615,6 +724,9 @@ def _threejs_html() -> str:
     let trackingPosition = null;
     let stateTimer = null;
     let targetPollMs = 33;
+"""
+        + agent_camera_script()
+        + """
 
     const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: false});
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -659,6 +771,9 @@ def _threejs_html() -> str:
 
     const modelRoot = new THREE.Group();
     scene.add(modelRoot);
+"""
+        + threejs_agent_camera_script()
+        + """
 
     function materialFor(geom) {
       const [r, g, b, a] = geom.rgba;
@@ -775,6 +890,7 @@ def _threejs_html() -> str:
     function animate() {
       orbit.update();
       renderer.render(scene, camera);
+      renderAgentCameraEmulation();
       requestAnimationFrame(animate);
     }
 
@@ -783,6 +899,7 @@ def _threejs_html() -> str:
       if (!res.ok) throw new Error(`scene request failed (${res.status})`);
       const payload = await res.json();
       targetPollMs = Math.max(16, Math.round(1000 / (payload.fps_target || 24)));
+      updateAuthoredCameras(payload.authored_cameras);
 
       for (const mesh of payload.meshes) {
         const geometry = new THREE.BufferGeometry();
@@ -825,6 +942,7 @@ def _threejs_html() -> str:
     function displayStatus(status) {
       const copy = {...status};
       delete copy.transforms;
+      delete copy.authored_cameras;
       delete copy.tracking_position;
       statusEl.textContent = JSON.stringify(copy, null, 2);
       renderMetaEl.textContent = `${status.env_name} · step ${status.step} · ${status.fps_target || 24} Hz physics · display-rate WebGL`;
@@ -843,6 +961,7 @@ def _threejs_html() -> str:
         if (!res.ok) throw new Error(`state request failed (${res.status})`);
         const status = await res.json();
         updateTransforms(status.transforms);
+        updateAuthoredCameras(status.authored_cameras);
         followRobot(status.tracking_position);
         displayStatus(status);
       } catch (err) {
@@ -878,7 +997,7 @@ def _threejs_html() -> str:
     animate();
 
     try {
-      await loadScene();
+      await Promise.all([loadScene(), initializeAgentCamera()]);
       await refreshState();
     } catch (err) {
       loadingEl.className = 'error';
