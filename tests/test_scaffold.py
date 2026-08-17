@@ -120,6 +120,46 @@ class ValidateEnvTests(unittest.TestCase):
         self.assertEqual(warnings, [])
         self.assertTrue(details["frames"]["pixels/view_0"]["changed_after_step"])
 
+    def test_vision_runtime_accepts_singleton_warp_renderer_axis(self) -> None:
+        import numpy as np
+
+        class Env:
+            mj_model = None
+
+        obs = {
+            "pixels/view_0": np.zeros((1, 8, 8, 3), dtype=np.float32),
+            "state": np.zeros((1,), dtype=np.float32),
+            "privileged_state": np.zeros((4,), dtype=np.float32),
+        }
+        next_obs = dict(obs)
+        next_obs["pixels/view_0"] = np.ones((1, 8, 8, 3), dtype=np.float32)
+        metadata = {
+            "network_spec": {"factory": {}},
+            "vision_spec": {
+                "pixel_keys": ["pixels/view_0"],
+                "resolution": [8, 8],
+                "frame_stack": 3,
+                "channels_per_frame": 1,
+                "value_range": [0.0, 1.0],
+            },
+        }
+
+        missing, warnings, details = _vision_runtime_checks(
+            Env(),
+            obs,
+            next_obs,
+            {"pixels/view_0": (8, 8, 3)},
+            require_vision=True,
+            metadata=metadata,
+        )
+
+        self.assertEqual(missing, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            details["frames"]["pixels/view_0"]["logical_shape"],
+            [8, 8, 3],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

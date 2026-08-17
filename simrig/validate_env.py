@@ -311,8 +311,10 @@ def _vision_runtime_checks(
         frame = np.asarray(obs[key])
         next_frame = np.asarray(next_obs[key]) if isinstance(next_obs, dict) else None
         shape = tuple(int(x) for x in frame.shape)
+        logical_shape = shape[1:] if len(shape) == 4 and shape[0] == 1 else shape
         entry = {
             "shape": list(shape),
+            "logical_shape": list(logical_shape),
             "dtype": str(frame.dtype),
             "finite": bool(np.isfinite(frame).all()),
             "minimum": float(np.min(frame)) if frame.size else None,
@@ -324,7 +326,7 @@ def _vision_runtime_checks(
             ),
         }
         frames[key] = entry
-        if len(shape) != 3:
+        if len(logical_shape) != 3:
             missing.append(f"vision: {key} must have HWC shape, got {shape}")
         if frame.dtype.kind not in "fui":
             missing.append(f"vision: {key} must use a numeric dtype, got {frame.dtype}")
@@ -334,16 +336,23 @@ def _vision_runtime_checks(
             warnings.append(f"vision: {key} did not change after one zero-action step")
         if isinstance(observation_size, dict) and key in observation_size:
             expected = observation_size[key]
-            if isinstance(expected, (list, tuple)) and tuple(expected) != shape:
+            if (
+                isinstance(expected, (list, tuple))
+                and tuple(expected) not in (shape, logical_shape)
+            ):
                 missing.append(
                     f"vision: observation_size[{key!r}]={tuple(expected)} "
                     f"does not match runtime shape {shape}"
                 )
         resolution = declared.get("resolution") if isinstance(declared, Mapping) else None
-        if resolution and len(shape) >= 2 and tuple(resolution) != shape[:2]:
+        if (
+            resolution
+            and len(logical_shape) >= 2
+            and tuple(resolution) != logical_shape[:2]
+        ):
             missing.append(
                 f"vision: declared resolution {tuple(resolution)} does not match "
-                f"{key} shape {shape[:2]}"
+                f"{key} shape {logical_shape[:2]}"
             )
         frame_stack = declared.get("frame_stack") if isinstance(declared, Mapping) else None
         channels_per_frame = _channels_per_frame(declared)
@@ -352,11 +361,15 @@ def _vision_runtime_checks(
             if frame_stack and channels_per_frame is not None
             else None
         )
-        if expected_channels is not None and len(shape) == 3 and expected_channels != shape[-1]:
+        if (
+            expected_channels is not None
+            and len(logical_shape) == 3
+            and expected_channels != logical_shape[-1]
+        ):
             missing.append(
                 f"vision: declared frame_stack={frame_stack} and "
                 f"channels_per_frame={channels_per_frame} imply {expected_channels} "
-                f"channels, but {key} has {shape[-1]}"
+                f"channels, but {key} has {logical_shape[-1]}"
             )
         value_range = declared.get("value_range") if isinstance(declared, Mapping) else None
         if value_range and len(value_range) == 2 and frame.size:
