@@ -79,6 +79,10 @@ def load_custom_env(
     module = import_env_module(path)
     overrides = dict(config_overrides or {})
 
+    default_config = getattr(module, "default_config", None)
+    config = default_config() if callable(default_config) else None
+    _ensure_mjx_warp_compat(config)
+
     make_env = getattr(module, "make_env", None)
     if callable(make_env):
         try:
@@ -92,11 +96,6 @@ def load_custom_env(
             f"Custom env module {path} must define make_env() or class {class_name}."
         )
 
-    config = None
-    default_config = getattr(module, "default_config", None)
-    if callable(default_config):
-        config = default_config()
-
     if isinstance(config, dict):
         merged = dict(config)
         merged.update(overrides)
@@ -109,6 +108,43 @@ def load_custom_env(
     if overrides:
         return _construct_env(cls, config=overrides, config_overrides=None)
     return _construct_env(cls, config=None, config_overrides=None)
+
+
+def _ensure_mjx_warp_compat(config: Any) -> bool:
+    """Bridge MuJoCo 3.10 to Warp 1.13's relocated GraphMode enum.
+
+    MuJoCo 3.10 imports an internal pre-1.13 Warp module.  Warp 1.13 is the
+    first release with the ``fill_mode`` API used by MuJoCo's tiled Cholesky
+    kernels, so use its public compatibility namespace when the generated
+    MuJoCo types fell back to placeholders.
+    """
+
+    impl = (
+        config.get("impl")
+        if isinstance(config, Mapping)
+        else getattr(config, "impl", None)
+    )
+    if str(impl).lower() != "warp":
+        return False
+
+    try:
+        import mujoco.mjx.warp as mjxw  # type: ignore
+        from warp.jax_experimental import GraphMode  # type: ignore
+    except ImportError:
+        return False
+
+    changed = False
+    if not hasattr(mjxw.types.GraphMode, "WARP"):
+        mjxw.types.GraphMode = GraphMode
+        changed = True
+    if getattr(mjxw.types, "Callback", None) is None and getattr(
+        mjxw,
+        "mjwp_types",
+        None,
+    ) is not None:
+        mjxw.types.Callback = mjxw.mjwp_types.Callback
+        changed = True
+    return changed
 
 
 def _construct_env(cls: type, *, config: Any, config_overrides: dict[str, Any] | None) -> Any:

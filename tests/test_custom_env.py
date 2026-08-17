@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from simrig.custom_env import (
+    _ensure_mjx_warp_compat,
     is_env_module_path,
     load_custom_env,
     load_custom_env_metadata,
@@ -125,6 +127,28 @@ def training_config():
         )
         self.assertEqual(metadata["vision_spec"]["requires_impl"], "warp")
         self.assertEqual(metadata["training_config"]["num_timesteps"], 1000)
+
+    def test_mjx_warp_compat_restores_relocated_types(self) -> None:
+        try:
+            import mujoco.mjx.warp as mjxw
+            from warp.jax_experimental import GraphMode
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        original_graph_mode = mjxw.types.GraphMode
+        original_callback = mjxw.types.Callback
+        try:
+            mjxw.types.GraphMode = int
+            mjxw.types.Callback = None
+
+            changed = _ensure_mjx_warp_compat(SimpleNamespace(impl="warp"))
+
+            self.assertTrue(changed)
+            self.assertIs(mjxw.types.GraphMode, GraphMode)
+            self.assertIs(mjxw.types.Callback, mjxw.mjwp_types.Callback)
+        finally:
+            mjxw.types.GraphMode = original_graph_mode
+            mjxw.types.Callback = original_callback
 
 
 class ValidateRuntimeTests(unittest.TestCase):
