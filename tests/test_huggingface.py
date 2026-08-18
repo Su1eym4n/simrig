@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 from simrig.huggingface import (
     is_huggingface_ref,
@@ -30,6 +34,39 @@ class HuggingFaceTests(unittest.TestCase):
 
         self.assertEqual(checkpoint, Path("runs/policy.params"))
         self.assertFalse(is_huggingface_ref(str(checkpoint)))
+
+    def test_hub_checkpoint_downloads_sibling_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "policy.params").touch()
+            calls = []
+
+            def snapshot_download(**kwargs):
+                calls.append(kwargs)
+                return str(snapshot)
+
+            module = types.ModuleType("huggingface_hub")
+            module.snapshot_download = snapshot_download
+            with patch.dict(sys.modules, {"huggingface_hub": module}):
+                checkpoint = resolve_policy_checkpoint(
+                    "hf://ssuleiman/simrig-vision-cartpole/policy.params",
+                    hf_revision="main",
+                    hf_token="test-token",
+                )
+
+        self.assertEqual(checkpoint, snapshot / "policy.params")
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "repo_id": "ssuleiman/simrig-vision-cartpole",
+                    "revision": "main",
+                    "token": "test-token",
+                    "allow_patterns": ["policy.params", "config.json"],
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":

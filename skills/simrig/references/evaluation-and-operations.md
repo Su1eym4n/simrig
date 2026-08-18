@@ -42,6 +42,11 @@ Resolve Hub checkpoints with:
 simrig eval hf://OWNER/REPO/PATH --env ENV_OR_PATH --hf-revision REVISION
 ```
 
+Hub resolution downloads the requested policy together with a sibling
+`config.json` when the repository provides one. Publish both files in the same
+Hub directory so SimRig can reconstruct recorded vision networks and runtime
+requirements rather than falling back to legacy checkpoint defaults.
+
 Use `--hf-token` only when necessary, and never print or commit the token.
 
 ## Evaluation

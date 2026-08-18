@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 HF_PREFIX = "hf://"
@@ -61,7 +61,7 @@ def resolve_policy_checkpoint(
     token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
     try:
-        from huggingface_hub import hf_hub_download  # type: ignore
+        from huggingface_hub import snapshot_download  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
             "Hugging Face policy refs require the `huggingface_hub` package. "
@@ -69,10 +69,12 @@ def resolve_policy_checkpoint(
             "`huggingface_hub` directly."
         ) from exc
 
-    path = hf_hub_download(
+    policy_path = PurePosixPath(ref.filename)
+    config_filename = str(policy_path.with_name("config.json"))
+    snapshot_path = snapshot_download(
         repo_id=ref.repo_id,
-        filename=ref.filename,
         revision=ref.revision,
         token=token,
+        allow_patterns=[ref.filename, config_filename],
     )
-    return Path(path)
+    return Path(snapshot_path).joinpath(*policy_path.parts)

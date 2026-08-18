@@ -272,6 +272,41 @@ network factory in `config.json`, then reconstructs the same CNN for `eval`,
 `demo`, and `preview`. Checkpoints created before vision support remain MLP by
 default.
 
+#### Run the pretrained vision reference
+
+The published reference policy was trained for 5,079,040 PPO steps with a
+1,000-step episode horizon. It completed all 1,000 requested steps without
+termination for evaluation seeds 0 through 4. Install both optional extras so
+SimRig can run the Playground environment and resolve the Hub artifact:
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e ".[playground,hf]"
+
+.venv/bin/simrig eval \
+  hf://ssuleiman/simrig-vision-cartpole/policy.params \
+  --env examples/vision_cartpole.py \
+  --hf-revision v1 \
+  --steps 1000 \
+  --seed 0
+
+.venv/bin/simrig preview \
+  hf://ssuleiman/simrig-vision-cartpole/policy.params \
+  --env examples/vision_cartpole.py \
+  --hf-revision v1 \
+  --auto-reset \
+  --port 8765
+```
+
+Both commands require a JAX-visible CUDA GPU and MuJoCo Warp. Hub resolution
+downloads `policy.params` with its sibling `config.json` so SimRig can rebuild
+the recorded vision CNN. Exact evaluation should use the recorded Python and
+package versions. `--allow-runtime-mismatch` is only for an explicitly
+qualitative preview on a different compatible runtime. The checkpoint,
+training configuration, metrics, environment snapshot, and five-seed report
+are published at
+[ssuleiman/simrig-vision-cartpole](https://huggingface.co/ssuleiman/simrig-vision-cartpole).
+
 ### Evaluate and preview
 
 ```bash

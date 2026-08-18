@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Publish a five-seed-tested, 1,000-step vision CartPole reference checkpoint
+  and download its sibling `config.json` with `hf://` policies so vision CNNs
+  reconstruct from Hub artifacts without manual metadata setup.
+- Make policy previews task-aware: hide unsupported command controls, accept
+  environment-defined command fields, expose episode state and survival, add
+  optional automatic reset, and label physics, policy-observation, sensor, and
+  browser display rates separately.
 - Keep Three.js previews headless-safe by lazily starting the optional native
   Sensor renderer and selecting EGL before MuJoCo import on display-less Linux.
 - Pin the tested Warp 1.13 runtime and bridge MuJoCo 3.10's stale internal
