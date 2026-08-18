@@ -68,6 +68,9 @@ def training_config() -> dict[str, Any]:
     result = config.to_dict()
     result["vision"] = True
     result["augment_pixels"] = True
+    # The upstream 250-step horizon is enough for a training smoke test but
+    # too short to demonstrate sustained visual balancing in a preview.
+    result["episode_length"] = 1_000
     return result
 
 
