@@ -93,30 +93,25 @@ is available. Update `observation_size` whenever features change.
 ### Pixel observations and vision PPO
 
 For rendered observations, keep the ordinary environment interface and add
-declarative module hooks:
+literal declarations that static validation can parse without importing JAX:
 
 ```python
-def network_spec():
-    return {
-        "type": "vision_cnn",
-        "factory": {
-            "policy_obs_key": "state",
-            "value_obs_key": "privileged_state",
-        },
-    }
-
-def vision_spec():
-    return {
-        "pixel_keys": ["pixels/view_0"],
-        "camera_names": ["fixed"],
-        "resolution": [64, 64],
-        "frame_stack": 3,
-        "channels_per_frame": 1,
-        "value_range": [-0.5, 0.5],
-        "requires_impl": "warp",
-        "nworld_config_key": "vision_config.nworld",
-    }
+DEFAULT_CONFIG = {"impl": "warp"}
+NETWORK_SPEC = {"type": "vision_cnn"}
+VISION_SPEC = {
+    "pixel_keys": ["pixels/view_0"],
+    "camera_names": ["fixed"],
+    "resolution": [64, 64],
+    "frame_stack": 3,
+    "channels_per_frame": 1,
+    "value_range": [-0.5, 0.5],
+    "requires_impl": "warp",
+    "nworld_config_key": "vision_config.nworld",
+}
 ```
+
+Runtime hooks may return richer versions, such as `network_spec()` with a Brax
+factory. Their shared values must agree with these literal declarations.
 
 Every pixel observation must use a `pixels/` prefix and a static HWC shape.
 The vision CNN consumes all `pixels/*` entries. `policy_obs_key` may add

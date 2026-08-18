@@ -25,12 +25,25 @@ from mujoco_playground.config import dm_control_suite_params
 
 ENV_NAME = "vision_cartpole"
 MODEL_PATH = mjx_env.ROOT_PATH / "dm_control_suite" / "xmls" / "cartpole.xml"
+DEFAULT_CONFIG = {"impl": "warp"}
+NETWORK_SPEC = {"type": "vision_cnn"}
+VISION_SPEC = {
+    "pixel_keys": ["pixels/view_0"],
+    "camera_names": ["fixed"],
+    "modalities": ["grayscale"],
+    "resolution": [64, 64],
+    "frame_stack": 3,
+    "channels_per_frame": 1,
+    "value_range": [-0.5, 0.5],
+    "requires_impl": "warp",
+    "nworld_config_key": "vision_config.nworld",
+}
 
 
 def default_config() -> config_dict.ConfigDict:
     """Return a one-world config that is cheap to construct for validation."""
     config = cartpole.default_config()
-    config.impl = "warp"
+    config.impl = DEFAULT_CONFIG["impl"]
     config.vision = True
     config.vision_config.nworld = 1
     return config
@@ -44,22 +57,12 @@ def network_spec() -> dict[str, Any]:
         policy_obs_key="state",
         value_obs_key="privileged_state",
     )
-    return {"type": "vision_cnn", "factory": factory}
+    return {**NETWORK_SPEC, "factory": factory}
 
 
 def vision_spec() -> dict[str, Any]:
     """Describe the renderer contract checked by ``validate-env --vision``."""
-    return {
-        "pixel_keys": ["pixels/view_0"],
-        "camera_names": ["fixed"],
-        "modalities": ["grayscale"],
-        "resolution": [64, 64],
-        "frame_stack": 3,
-        "channels_per_frame": 1,
-        "value_range": [-0.5, 0.5],
-        "requires_impl": "warp",
-        "nworld_config_key": "vision_config.nworld",
-    }
+    return dict(VISION_SPEC)
 
 
 def training_config() -> dict[str, Any]:

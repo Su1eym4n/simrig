@@ -96,7 +96,7 @@ supported backend.
 
 ## Installation
 
-SimRig requires Python 3.10 or newer. Install the Playground training stack
+SimRig requires Python 3.11 or newer. Install the Playground training stack
 from PyPI:
 
 ```bash
@@ -266,11 +266,13 @@ simrig train examples/vision_cartpole.py --preset smoke \
   --output runs/vision-cartpole-smoke
 ```
 
-A vision module declares `network_spec()`, `vision_spec()`, and optionally
-`training_config()`. SimRig persists the selected `network_type` and complete
-network factory in `config.json`, then reconstructs the same CNN for `eval`,
-`demo`, and `preview`. Checkpoints created before vision support remain MLP by
-default.
+A vision module declares literal `NETWORK_SPEC`, `VISION_SPEC`, and
+`DEFAULT_CONFIG` mappings for import-free static validation. Runtime hooks
+`network_spec()`, `vision_spec()`, and optionally `training_config()` may enrich
+those declarations after dependencies are installed. SimRig persists the
+selected `network_type` and complete network factory in `config.json`, then
+reconstructs the same CNN for `eval`, `demo`, and `preview`. Checkpoints created
+before vision support remain MLP by default.
 
 #### Run the pretrained vision reference
 

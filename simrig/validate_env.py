@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from simrig.custom_env import load_custom_env_metadata
+from simrig.custom_env import (
+    load_custom_env_metadata,
+    load_custom_env_static_metadata,
+)
 from simrig.networks import VISION_CNN_NETWORK
 from simrig.scaffold import REQUIRED_CLASS_METHODS, REQUIRED_SECTION_MARKERS
 
@@ -59,15 +62,28 @@ def validate_env(
 
     source = env_path.read_text(encoding="utf-8")
     metadata: dict[str, Any] = {}
+    declared_metadata: dict[str, Any] = {}
     network_type: str | None = None
     vision_details: dict[str, Any] = {}
-    if runtime or vision:
+    if vision:
+        try:
+            declared_metadata = load_custom_env_static_metadata(env_path)
+            network_type = str(declared_metadata["network_spec"]["type"])
+            vision_details["declared"] = dict(declared_metadata["vision_spec"])
+        except Exception as exc:
+            missing.append(f"static metadata load failed: {exc}")
+    if runtime:
         try:
             metadata = load_custom_env_metadata(env_path)
-            network_type = str(metadata["network_spec"]["type"])
-            vision_details["declared"] = dict(metadata["vision_spec"])
+            runtime_network_type = str(metadata["network_spec"]["type"])
+            if vision and declared_metadata:
+                missing.extend(_metadata_contract_mismatches(declared_metadata, metadata))
+            else:
+                network_type = runtime_network_type
         except Exception as exc:
             missing.append(f"metadata load failed: {exc}")
+    elif vision:
+        metadata = declared_metadata
     if vision and network_type != VISION_CNN_NETWORK:
         missing.append(
             "vision: network_spec must declare type `vision_cnn` when --vision is used"
@@ -169,6 +185,31 @@ def validate_env(
         network_type=network_type,
         vision=vision_details,
     )
+
+
+def _metadata_contract_mismatches(
+    declared: Mapping[str, Any], runtime: Mapping[str, Any]
+) -> list[str]:
+    """Report disagreement between literal declarations and runtime hooks."""
+    mismatches: list[str] = []
+    declared_network = declared.get("network_spec", {})
+    runtime_network = runtime.get("network_spec", {})
+    if declared_network.get("type") != runtime_network.get("type"):
+        mismatches.append(
+            "vision: NETWORK_SPEC type does not match runtime network_spec()"
+        )
+    for section_name, constant_name in (
+        ("default_config", "DEFAULT_CONFIG"),
+        ("vision_spec", "VISION_SPEC"),
+    ):
+        declared_section = declared.get(section_name, {})
+        runtime_section = runtime.get(section_name, {})
+        for key, value in declared_section.items():
+            if runtime_section.get(key) != value:
+                mismatches.append(
+                    f"vision: {constant_name}[{key!r}] does not match its runtime hook"
+                )
+    return mismatches
 
 
 def _runtime_checks(

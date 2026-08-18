@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require Python 3.11+, test the supported boundary in CI, and make static
+  vision validation parse literal metadata without importing JAX or Playground.
 - Publish a five-seed-tested, 1,000-step vision CartPole reference checkpoint
   and download its sibling `config.json` with `hf://` policies so vision CNNs
   reconstruct from Hub artifacts without manual metadata setup.

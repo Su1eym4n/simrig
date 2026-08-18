@@ -10,6 +10,7 @@ from simrig.custom_env import (
     is_env_module_path,
     load_custom_env,
     load_custom_env_metadata,
+    load_custom_env_static_metadata,
     resolve_env_label,
 )
 from simrig.scaffold import new_env
@@ -127,6 +128,44 @@ def training_config():
         )
         self.assertEqual(metadata["vision_spec"]["requires_impl"], "warp")
         self.assertEqual(metadata["training_config"]["num_timesteps"], 1000)
+
+    def test_static_metadata_does_not_import_environment_dependencies(self) -> None:
+        source = '''\
+import dependency_that_is_intentionally_unavailable
+
+DEFAULT_CONFIG = {"impl": "warp"}
+NETWORK_SPEC = {"type": "vision_cnn"}
+VISION_SPEC = {
+    "pixel_keys": ["pixels/view_0"],
+    "camera_names": ["fixed"],
+    "requires_impl": "warp",
+}
+TRAINING_CONFIG = {"num_timesteps": 1000}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.py"
+            path.write_text(source, encoding="utf-8")
+
+            metadata = load_custom_env_static_metadata(path)
+
+        self.assertEqual(metadata["default_config"]["impl"], "warp")
+        self.assertEqual(metadata["network_spec"]["type"], "vision_cnn")
+        self.assertEqual(metadata["vision_spec"]["camera_names"], ["fixed"])
+        self.assertEqual(metadata["training_config"]["num_timesteps"], 1000)
+
+    def test_static_metadata_rejects_dynamic_constant(self) -> None:
+        source = '''\
+def build_spec():
+    return {"type": "vision_cnn"}
+
+NETWORK_SPEC = build_spec()
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.py"
+            path.write_text(source, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "literal mapping"):
+                load_custom_env_static_metadata(path)
 
     def test_mjx_warp_compat_restores_relocated_types(self) -> None:
         try:

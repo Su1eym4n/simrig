@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -61,6 +62,56 @@ def load_custom_env_metadata(path: Path | str) -> dict[str, Any]:
         "network_spec": normalize_network_spec(network_value),
         "vision_spec": _mapping_or_empty(vision_value, "vision_spec"),
         "training_config": _mapping_or_empty(training_value, "training_config"),
+    }
+
+
+def load_custom_env_static_metadata(path: Path | str) -> dict[str, Any]:
+    """Read literal metadata constants without importing the env module.
+
+    This is the dependency-free contract used by static validation. Runtime
+    hooks remain available through :func:`load_custom_env_metadata` and may
+    enrich these declarations with objects such as a Brax network factory.
+    """
+    env_path = Path(path).expanduser().resolve()
+    if not env_path.is_file():
+        raise FileNotFoundError(f"Custom env module not found: {env_path}")
+    if env_path.suffix != ".py":
+        raise ValueError(f"Custom env module must be a .py file: {env_path}")
+
+    tree = ast.parse(env_path.read_text(encoding="utf-8"), filename=str(env_path))
+    names = {
+        "DEFAULT_CONFIG",
+        "NETWORK_SPEC",
+        "VISION_SPEC",
+        "TRAINING_CONFIG",
+    }
+    values: dict[str, dict[str, Any]] = {}
+    for node in tree.body:
+        name: str | None = None
+        value_node: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                name = target.id
+                value_node = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        if name not in names or value_node is None:
+            continue
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(
+                f"{name} must be a literal mapping for static validation"
+            ) from exc
+        values[name] = _mapping_or_empty(value, name)
+
+    return {
+        "default_config": values.get("DEFAULT_CONFIG", {}),
+        "network_spec": normalize_network_spec(values.get("NETWORK_SPEC")),
+        "vision_spec": values.get("VISION_SPEC", {}),
+        "training_config": values.get("TRAINING_CONFIG", {}),
     }
 
 

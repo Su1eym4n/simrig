@@ -154,8 +154,10 @@ Treat static validation as a structure check only. Treat runtime validation as
 one reset/step compatibility check. Treat smoke training as pipeline evidence,
 not proof that the behavior is learned.
 
-For a pixel-observation environment, require declarative `network_spec()` and
-`vision_spec()` hooks, then add the vision gate:
+For a pixel-observation environment, require literal `NETWORK_SPEC`,
+`VISION_SPEC`, and `DEFAULT_CONFIG` mappings for import-free static checks.
+Runtime `network_spec()` and `vision_spec()` hooks may enrich those declarations
+after the training dependencies are available. Then add the vision gate:
 
 ```bash
 simrig validate-env envs/TASK_NAME.py --vision

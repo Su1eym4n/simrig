@@ -7,7 +7,7 @@ name = "simrig"
 dynamic = ["version"]
 description = "Agent- and human-friendly workflows for MuJoCo Playground training and evaluation."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "SimRig contributors" }]
