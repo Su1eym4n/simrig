@@ -50,7 +50,7 @@ class HuggingFaceTests(unittest.TestCase):
             module.snapshot_download = snapshot_download
             with patch.dict(sys.modules, {"huggingface_hub": module}):
                 checkpoint = resolve_policy_checkpoint(
-                    "hf://ssuleiman/simrig-vision-cartpole/policy.params",
+                    "hf://example-org/vision-policy/policy.params",
                     hf_revision="main",
                     hf_token="test-token",
                 )
@@ -60,7 +60,7 @@ class HuggingFaceTests(unittest.TestCase):
             calls,
             [
                 {
-                    "repo_id": "ssuleiman/simrig-vision-cartpole",
+                    "repo_id": "example-org/vision-policy",
                     "revision": "main",
                     "token": "test-token",
                     "allow_patterns": ["policy.params", "config.json"],
