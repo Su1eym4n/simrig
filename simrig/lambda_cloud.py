@@ -28,7 +28,11 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 def _pinned_jax_version(project: Path) -> str:
     """Return the exact JAX version required by the synced SimRig checkout."""
     metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = metadata.get("project", {}).get("dependencies", [])
+    project_metadata = metadata.get("project", {})
+    dependencies = list(project_metadata.get("dependencies", []))
+    optional_dependencies = project_metadata.get("optional-dependencies", {})
+    for group in optional_dependencies.values():
+        dependencies.extend(group)
     for dependency in dependencies:
         match = re.fullmatch(r"jax\s*==\s*([A-Za-z0-9._+-]+)", dependency)
         if match:

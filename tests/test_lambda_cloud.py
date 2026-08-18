@@ -76,7 +76,8 @@ class LambdaCloudTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             (project / "pyproject.toml").write_text(
-                '[project]\ndependencies = ["jax==0.10.2"]\n',
+                '[project]\ndependencies = []\n'
+                '[project.optional-dependencies]\nplayground = ["jax==0.10.2"]\n',
                 encoding="utf-8",
             )
             (project / "simrig").mkdir()
