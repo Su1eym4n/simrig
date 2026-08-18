@@ -201,6 +201,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preview_parser.add_argument("--paused", action="store_true", help="Start the browser preview paused.")
     preview_parser.add_argument(
+        "--auto-reset",
+        action="store_true",
+        help="Automatically start a new episode after termination.",
+    )
+    preview_parser.add_argument(
+        "--auto-reset-delay",
+        type=float,
+        default=1.5,
+        help="Seconds to preserve the terminal pose before automatic reset.",
+    )
+    preview_parser.add_argument(
         "--allow-runtime-mismatch",
         action="store_true",
         help="Allow an explicitly qualitative preview when recorded runtime versions differ.",
@@ -541,6 +552,8 @@ def _cmd_preview(args: argparse.Namespace) -> None:
         render_mode=args.render_mode,
         paused=args.paused,
         fps=args.fps,
+        auto_reset=args.auto_reset,
+        auto_reset_delay=args.auto_reset_delay,
         allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
 

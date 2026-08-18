@@ -49,6 +49,34 @@ Clip normalized policy actions and map them to the intended actuator controls.
 Handle actuator limits, offsets, gains, control rate, and simulation substeps.
 Track the previous action when using action-rate observations or penalties.
 
+### Preview command controls
+
+When an environment supports a user-set target or command vector, keep the
+current vector in `state.info["command"]` or implement `set_command(state,
+command)`. To give browser controls task-specific names, expose
+`command_spec()` on the environment instance. It may return strings:
+
+```python
+def command_spec(self):
+    return ["a", "b", "c"]
+```
+
+or field metadata:
+
+```python
+def command_spec(self):
+    return [
+        {"key": "forward", "label": "Forward", "unit": "m/s", "step": 0.1},
+        {"key": "turn", "label": "Turn", "unit": "rad/s", "step": 0.1},
+    ]
+```
+
+Optional `min` and `max` values become numeric input bounds. The number of
+declared controls must match the command vector. Preview hides the entire
+command section when neither a command vector nor a command specification is
+present. Three-axis commands without a declaration retain the conventional
+Forward X, Lateral Y, and Yaw labels.
+
 ## Observations
 
 Return:

@@ -300,6 +300,24 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.python_command, "/usr/bin/python3.12")
 
+    def test_preview_accepts_episode_auto_reset_options(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            [
+                "preview",
+                "runs/example/policy.params",
+                "--env",
+                "ExampleEnv",
+                "--auto-reset",
+                "--auto-reset-delay",
+                "2.5",
+            ]
+        )
+
+        self.assertTrue(args.auto_reset)
+        self.assertEqual(args.auto_reset_delay, 2.5)
+
 
 if __name__ == "__main__":
     unittest.main()

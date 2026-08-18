@@ -216,6 +216,9 @@ Then preview the same checkpoint and environment:
 simrig preview runs/RUN/policy.params --env ENV_OR_PATH --port 8765
 ```
 
+Use `--auto-reset` to begin a new episode after termination while preserving
+the terminal pose briefly; adjust that pause with `--auto-reset-delay`.
+
 Use `--command X Y YAW` with `eval` and `preview` only for environments that
 expose command-like state. Repeat headless evaluation with distinct `--seed`
 values when the task contract requires multiple trials. Open
@@ -225,6 +228,11 @@ browser-local orbit, zoom, and pan do not interrupt policy stepping. Named
 MuJoCo cameras appear in a Robot View inset while the human orbit camera remains
 independent. Emulated mode shares the Three.js design; Sensor mode is the native
 MuJoCo comparison. Actual policy observations remain environment-defined.
+The preview reports episode number and survival length, and distinguishes
+simulator physics, policy-observation, Sensor-display, and browser-playback
+rates. Command controls appear only for environments that expose commands;
+custom environments may name arbitrary command fields with an instance
+`command_spec()` method.
 Use `--render-mode mujoco` for the local full-page stream or
 `--render-mode topdown` for the schematic fallback. Prefer `preview` for
 agent-visible review; use `demo` only when the user explicitly wants the native

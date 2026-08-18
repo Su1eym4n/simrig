@@ -284,11 +284,13 @@ simrig eval runs/<run-dir>/policy.params \
 simrig preview runs/<run-dir>/policy.params \
   --env Go1JoystickFlatTerrain \
   --command 0.5 0.0 0.0 \
+  --auto-reset \
   --port 8765
 ```
 
-Open `http://127.0.0.1:8765/` to orbit, zoom, pan, change commands, pause, and
-inspect the live rollout. Preview uses the Three.js renderer by default: the
+Open `http://127.0.0.1:8765/` to orbit, zoom, pan, change supported commands,
+toggle automatic episode reset, pause, and inspect the live rollout. Preview
+uses the Three.js renderer by default: the
 policy advances on a server-side rollout clock while lightweight MuJoCo geom
 transforms update the browser scene. The camera follows the robot without
 coupling policy stepping to display rendering. Environments with named MuJoCo
