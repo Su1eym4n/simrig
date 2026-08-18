@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from simrig.networks import MLP_NETWORK
+
 
 PRESETS: dict[str, dict[str, Any]] = {
     "smoke": {
@@ -135,6 +137,15 @@ def resolve_network_factory(
 
     legacy_small = bool(config.get("small_network")) if config is not None else False
     return legacy_network_factory(legacy_small)
+
+
+def resolve_network_type(checkpoint: Path | str) -> str:
+    """Resolve the recorded network implementation, defaulting to legacy MLP."""
+    config = checkpoint_config(checkpoint)
+    if config is None:
+        return MLP_NETWORK
+    value = config.get("network_type", MLP_NETWORK)
+    return str(value)
 
 
 def resolve_small_network(

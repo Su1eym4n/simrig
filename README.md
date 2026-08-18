@@ -96,7 +96,7 @@ supported backend.
 
 ## Installation
 
-SimRig requires Python 3.10 or newer. Install the Playground training stack
+SimRig requires Python 3.11 or newer. Install the Playground training stack
 from PyPI:
 
 ```bash
@@ -187,9 +187,16 @@ simrig view-model path/to/robot.xml --port 8766
 Open `http://127.0.0.1:8766/` to inspect the compiled model, orbit/zoom/pan the
 camera, and adjust named joints. The default `threejs` renderer sends MuJoCo's
 visual meshes and primitives to a GPU-accelerated WebGL scene, so camera motion
-stays smooth without streaming image frames from Python. If the MJCF defines a
-keyframe, the viewer starts from its first authored pose and **Reset Joints**
-restores it.
+stays smooth. When the MJCF contains named cameras, the page also shows a
+**Robot View** inset. Its default **Emulated** mode uses a second Three.js camera
+with the compiled MuJoCo camera's live world pose and vertical field of view,
+giving it the same visual design as the orbit view. Switch to **Sensor** for the
+native MuJoCo offscreen image, use the camera dropdown to switch cameras, or
+choose the initial camera with `--camera NAME`. The inset follows joint-slider
+changes while the main Three.js camera remains freely movable. The emulation is
+for human inspection; vision policies train on MJX/Warp pixels, not this WebGL
+render. If the MJCF defines a keyframe, the viewer starts from its first
+authored pose and **Reset Joints** restores it.
 
 The Three.js modules are pinned and loaded from jsDelivr, so the default viewer
 needs an internet connection when the page first loads. For an entirely local
@@ -241,6 +248,67 @@ The generated environment is a starter, not an invented task definition. The
 reward, observations, actions, resets, and termination logic remain explicit
 and editable in Python.
 
+### Train from rendered pixels
+
+Custom environments can declare a Brax vision CNN instead of the legacy MLP.
+The included cartpole example renders real 64x64 MuJoCo frames, stacks three
+grayscale frames, feeds pixels plus the previous action to the actor, and gives
+the critic additional simulator state:
+
+```bash
+# CPU-safe metadata check
+simrig validate-env examples/vision_cartpole.py --vision
+
+# These require a JAX-visible CUDA GPU and MuJoCo Warp.
+simrig validate-env examples/vision_cartpole.py --runtime --vision
+simrig smoke examples/vision_cartpole.py --steps 5
+simrig train examples/vision_cartpole.py --preset smoke \
+  --output runs/vision-cartpole-smoke
+```
+
+A vision module declares literal `NETWORK_SPEC`, `VISION_SPEC`, and
+`DEFAULT_CONFIG` mappings for import-free static validation. Runtime hooks
+`network_spec()`, `vision_spec()`, and optionally `training_config()` may enrich
+those declarations after dependencies are installed. SimRig persists the
+selected `network_type` and complete network factory in `config.json`, then
+reconstructs the same CNN for `eval`, `demo`, and `preview`. Checkpoints created
+before vision support remain MLP by default.
+
+#### Run the pretrained vision reference
+
+The published reference policy was trained for 5,079,040 PPO steps with a
+1,000-step episode horizon. It completed all 1,000 requested steps without
+termination for evaluation seeds 0 through 4. Install both optional extras so
+SimRig can run the Playground environment and resolve the Hub artifact:
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e ".[playground,hf]"
+
+.venv/bin/simrig eval \
+  hf://ssuleiman/simrig-vision-cartpole/policy.params \
+  --env examples/vision_cartpole.py \
+  --hf-revision v1 \
+  --steps 1000 \
+  --seed 0
+
+.venv/bin/simrig preview \
+  hf://ssuleiman/simrig-vision-cartpole/policy.params \
+  --env examples/vision_cartpole.py \
+  --hf-revision v1 \
+  --auto-reset \
+  --port 8765
+```
+
+Both commands require a JAX-visible CUDA GPU and MuJoCo Warp. Hub resolution
+downloads `policy.params` with its sibling `config.json` so SimRig can rebuild
+the recorded vision CNN. Exact evaluation should use the recorded Python and
+package versions. `--allow-runtime-mismatch` is only for an explicitly
+qualitative preview on a different compatible runtime. The checkpoint,
+training configuration, metrics, environment snapshot, and five-seed report
+are published at
+[ssuleiman/simrig-vision-cartpole](https://huggingface.co/ssuleiman/simrig-vision-cartpole).
+
 ### Evaluate and preview
 
 ```bash
@@ -253,15 +321,23 @@ simrig eval runs/<run-dir>/policy.params \
 simrig preview runs/<run-dir>/policy.params \
   --env Go1JoystickFlatTerrain \
   --command 0.5 0.0 0.0 \
+  --auto-reset \
   --port 8765
 ```
 
-Open `http://127.0.0.1:8765/` to orbit, zoom, pan, change commands, pause, and
-inspect the live rollout. Preview uses the Three.js renderer by default: the
+Open `http://127.0.0.1:8765/` to orbit, zoom, pan, change supported commands,
+toggle automatic episode reset, pause, and inspect the live rollout. Preview
+uses the Three.js renderer by default: the
 policy advances on a server-side rollout clock while lightweight MuJoCo geom
 transforms update the browser scene. The camera follows the robot without
-streaming rendered image frames. Use `--render-mode mujoco` for the older local
-image-stream preview or `--render-mode topdown` for the schematic fallback.
+coupling policy stepping to display rendering. Environments with named MuJoCo
+cameras also get a **Robot View** inset, selectable without moving the human
+orbit camera. **Emulated** renders the live authored camera pose and FOV in the
+same Three.js scene; **Sensor** shows the native MuJoCo offscreen image for
+comparison. Neither changes policy input: training and rollout inference keep
+using the environment's configured observation pipeline. Use
+`--render-mode mujoco` for the older full-page local image stream or
+`--render-mode topdown` for the schematic fallback.
 
 ### Train on a Lambda Cloud GPU
 

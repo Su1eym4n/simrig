@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import os
 import sys
 import time
@@ -16,8 +15,19 @@ from simrig.core import (
     SmokeResult,
     TrainabilityStatus,
 )
-from simrig.custom_env import is_env_module_path, load_custom_env, resolve_env_label
+from simrig.custom_env import (
+    is_env_module_path,
+    load_custom_env,
+    load_custom_env_metadata,
+    resolve_env_label,
+)
 from simrig.io import default_run_dir, save_json
+from simrig.networks import (
+    MLP_NETWORK,
+    is_vision_network,
+    make_network_factory,
+    normalize_network_spec,
+)
 from simrig.paths import find_menagerie
 from simrig.presets import (
     apply_preset_scale,
@@ -25,6 +35,7 @@ from simrig.presets import (
     legacy_network_factory,
     preset,
     resolve_network_factory,
+    resolve_network_type,
 )
 from simrig.runtime import runtime_manifest, training_provenance, verify_checkpoint_runtime
 
@@ -47,6 +58,8 @@ _PPO_CONFIG_KEYS = (
     "num_resets_per_eval",
     "max_grad_norm",
     "clipping_epsilon",
+    "vision",
+    "augment_pixels",
 )
 
 
@@ -94,25 +107,66 @@ def resolve_training_config(
         raise ValueError("Training seed must be non-negative.")
 
     if is_env_module_path(env_name):
-        resolved_impl = "jax" if impl == "auto" else impl
+        try:
+            metadata = load_custom_env_metadata(env_name)
+        except FileNotFoundError:
+            metadata = {
+                "default_config": {},
+                "network_spec": {"type": MLP_NETWORK, "factory": {}},
+                "vision_spec": {},
+                "training_config": {},
+            }
+        default_impl = str(metadata["default_config"].get("impl", "jax"))
+        resolved_impl = default_impl if impl == "auto" else impl
+        vision_spec = _plain_dict(metadata["vision_spec"])
+        required_impl = vision_spec.get("requires_impl")
+        if required_impl and resolved_impl != required_impl:
+            raise RuntimeError(
+                f"This vision environment requires impl={required_impl}; "
+                f"resolved impl={resolved_impl}."
+            )
         if resolved_impl == "warp" and not _warp_available():
-            raise RuntimeError("MuJoCo Warp training requires a JAX-visible GPU.")
+            raise RuntimeError(
+                "MuJoCo Warp training requires a JAX-visible GPU. Standard "
+                "MuJoCo camera checks may still run locally, but vectorized "
+                "vision PPO needs CUDA/Warp."
+            )
         impl_resolution = "auto-custom-env-default" if impl == "auto" else "explicit"
-        config = preset(preset_name)
-        network = legacy_network_factory(bool(config.pop("small_network")))
-        source = "simrig-generic-custom-env"
+        custom_training = _plain_dict(metadata["training_config"])
+        if "num_timesteps" in custom_training:
+            custom_training["timesteps"] = custom_training.pop("num_timesteps")
+        if custom_training:
+            default_network = custom_training.pop("network_factory", {})
+            config = apply_preset_scale(preset_name, custom_training)
+            source = "custom-env:training_config"
+        else:
+            config = preset(preset_name)
+            default_network = legacy_network_factory(bool(config.pop("small_network")))
+            source = "simrig-generic-custom-env"
+        network_spec = normalize_network_spec(
+            _plain_dict(metadata["network_spec"]),
+            default_factory=default_network,
+        )
+        network = network_spec["factory"]
+        network_type = network_spec["type"]
     else:
         registry = _import_registry()
         resolved_impl, impl_resolution = _resolve_impl(registry, env_name, impl)
         upstream, source = _upstream_ppo_config(env_name, resolved_impl)
         network = upstream.pop("network_factory", {})
         config = apply_preset_scale(preset_name, upstream)
+        network_type = MLP_NETWORK
+        vision_spec = {}
 
     config.update(overrides or {})
-    config.setdefault("normalize_observations", True)
+    vision_network = is_vision_network(network_type)
+    config.setdefault("normalize_observations", not vision_network)
     config.setdefault("action_repeat", 1)
     config.setdefault("reward_scaling", 1.0)
     config.setdefault("num_resets_per_eval", 0)
+    # Brax's vision wrapper must agree with the selected network implementation.
+    config["vision"] = vision_network
+    config.setdefault("augment_pixels", vision_network)
     config.update(
         {
             "seed": seed,
@@ -120,6 +174,8 @@ def resolve_training_config(
             "impl_requested": impl,
             "impl_resolution": impl_resolution,
             "network_factory": network,
+            "network_type": network_type,
+            "vision_spec": vision_spec,
             "ppo_config_source": source,
         }
     )
@@ -309,6 +365,34 @@ def inspect_env(env_name: str, *, backend: str = "mujoco-playground") -> EnvInsp
 
 def _inspect_custom_env(env_name: str, *, label: str, backend: str) -> EnvInspectionReport:
     try:
+        metadata = load_custom_env_metadata(env_name)
+    except Exception:
+        metadata = {
+            "network_spec": {"type": MLP_NETWORK},
+            "vision_spec": {},
+        }
+    network_type = str(metadata["network_spec"]["type"])
+    vision_spec = _plain_dict(metadata["vision_spec"])
+    if (
+        is_vision_network(network_type)
+        and vision_spec.get("requires_impl") == "warp"
+        and not _warp_available()
+    ):
+        return EnvInspectionReport(
+            name=label,
+            backend=backend,
+            status=TrainabilityStatus.INSPECTABLE,
+            available=True,
+            loaded=False,
+            network_type=network_type,
+            vision=vision_spec,
+            warnings=[
+                "Rendered vision runtime requires a JAX-visible CUDA GPU and "
+                "MuJoCo Warp. Metadata is available, but the env was not constructed."
+            ],
+            notes=[f"Custom env module: {env_name}"],
+        )
+    try:
         env = load_env(env_name)
     except Exception as exc:
         return EnvInspectionReport(
@@ -339,6 +423,8 @@ def _inspect_custom_env(env_name: str, *, label: str, backend: str) -> EnvInspec
         model_bodies=int(mj_model.nbody) if mj_model is not None else None,
         model_actuators=int(mj_model.nu) if mj_model is not None else None,
         has_domain_randomizer=False,
+        network_type=network_type,
+        vision=vision_spec,
         warnings=warnings,
         notes=[
             f"Custom env module: {env_name}",
@@ -381,6 +467,17 @@ def smoke_env(
     label = resolve_env_label(env_name)
     jax, jp, *_ = _import_training_deps()
     try:
+        if is_env_module_path(env_name):
+            metadata = load_custom_env_metadata(env_name)
+            if (
+                is_vision_network(str(metadata["network_spec"]["type"]))
+                and metadata["vision_spec"].get("requires_impl") == "warp"
+                and not _warp_available()
+            ):
+                raise RuntimeError(
+                    "Rendered vision smoke requires a JAX-visible CUDA GPU and "
+                    "MuJoCo Warp."
+                )
         env = load_env(env_name)
         reset = jax.jit(env.reset)
         step = jax.jit(env.step)
@@ -439,12 +536,18 @@ def train_ppo(
     output_dir = output_dir.resolve()
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    env_overrides = {"impl": config["impl"]}
-    env = load_env(env_name, config_overrides=env_overrides)
-    eval_env = load_env(env_name, config_overrides=env_overrides)
-    network_factory = functools.partial(
-        ppo_networks.make_ppo_networks,
-        **config["network_factory"],
+    env = load_env(
+        env_name,
+        config_overrides=_training_env_overrides(config, evaluation=False),
+    )
+    eval_env = load_env(
+        env_name,
+        config_overrides=_training_env_overrides(config, evaluation=True),
+    )
+    network_factory = make_network_factory(
+        config.get("network_type", MLP_NETWORK),
+        config["network_factory"],
+        ppo_networks=ppo_networks,
     )
     randomizer = _resolve_domain_randomizer(env_name, env) if domain_randomization else None
     randomizer_name = _callable_name(randomizer) if randomizer is not None else None
@@ -551,12 +654,14 @@ def eval_policy(
         checkpoint,
         allow_mismatch=allow_runtime_mismatch,
     )
+    _ensure_checkpoint_vision_runtime(checkpoint)
     jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
     env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
     network_config = resolve_network_factory(checkpoint, small_network=small_network)
-    network_factory = functools.partial(
-        ppo_networks.make_ppo_networks,
-        **network_config,
+    network_factory = make_network_factory(
+        resolve_network_type(checkpoint),
+        network_config,
+        ppo_networks=ppo_networks,
     )
     networks = network_factory(
         env.observation_size,
@@ -626,6 +731,7 @@ def demo_policy(
     """Run a trained policy in a desktop MuJoCo viewer."""
     _validate_backend(backend)
     verify_checkpoint_runtime(checkpoint, allow_mismatch=allow_runtime_mismatch)
+    _ensure_checkpoint_vision_runtime(checkpoint)
     jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
     try:
         import mujoco  # type: ignore
@@ -637,9 +743,10 @@ def demo_policy(
 
     env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
     network_config = resolve_network_factory(checkpoint, small_network=small_network)
-    network_factory = functools.partial(
-        ppo_networks.make_ppo_networks,
-        **network_config,
+    network_factory = make_network_factory(
+        resolve_network_type(checkpoint),
+        network_config,
+        ppo_networks=ppo_networks,
     )
     networks = network_factory(
         env.observation_size,
@@ -715,8 +822,40 @@ def _checkpoint_env_overrides(checkpoint: Path | str) -> dict[str, Any] | None:
     config = checkpoint_config(checkpoint)
     if config is None:
         return None
+    overrides: dict[str, Any] = {}
     impl = config.get("impl")
-    return {"impl": impl} if impl in {"jax", "warp"} else None
+    if impl in {"jax", "warp"}:
+        overrides["impl"] = impl
+    vision_spec = config.get("vision_spec")
+    if isinstance(vision_spec, Mapping):
+        nworld_key = vision_spec.get("nworld_config_key")
+        if nworld_key:
+            overrides[str(nworld_key)] = 1
+    return overrides or None
+
+
+def _ensure_checkpoint_vision_runtime(checkpoint: Path | str) -> None:
+    if resolve_network_type(checkpoint) == "vision_cnn" and not _warp_available():
+        raise RuntimeError(
+            "This vision checkpoint requires a JAX-visible CUDA GPU and MuJoCo Warp "
+            "for environment rendering and policy rollout."
+        )
+
+
+def _training_env_overrides(
+    config: Mapping[str, Any],
+    *,
+    evaluation: bool,
+) -> dict[str, Any]:
+    """Build environment overrides, including renderer batch cardinality."""
+    overrides = {"impl": config["impl"]}
+    vision_spec = config.get("vision_spec")
+    if isinstance(vision_spec, Mapping):
+        nworld_key = vision_spec.get("nworld_config_key")
+        if nworld_key:
+            count_key = "num_eval_envs" if evaluation else "num_envs"
+            overrides[str(nworld_key)] = int(config[count_key])
+    return overrides
 
 
 def _copy_mocap_state(source_data: Any, target_data: Any) -> None:

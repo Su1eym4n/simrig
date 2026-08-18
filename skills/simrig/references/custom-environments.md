@@ -49,6 +49,34 @@ Clip normalized policy actions and map them to the intended actuator controls.
 Handle actuator limits, offsets, gains, control rate, and simulation substeps.
 Track the previous action when using action-rate observations or penalties.
 
+### Preview command controls
+
+When an environment supports a user-set target or command vector, keep the
+current vector in `state.info["command"]` or implement `set_command(state,
+command)`. To give browser controls task-specific names, expose
+`command_spec()` on the environment instance. It may return strings:
+
+```python
+def command_spec(self):
+    return ["a", "b", "c"]
+```
+
+or field metadata:
+
+```python
+def command_spec(self):
+    return [
+        {"key": "forward", "label": "Forward", "unit": "m/s", "step": 0.1},
+        {"key": "turn", "label": "Turn", "unit": "rad/s", "step": 0.1},
+    ]
+```
+
+Optional `min` and `max` values become numeric input bounds. The number of
+declared controls must match the command vector. Preview hides the entire
+command section when neither a command vector nor a command specification is
+present. Three-axis commands without a declaration retain the conventional
+Forward X, Lateral Y, and Yaw labels.
+
 ## Observations
 
 Return:
@@ -61,6 +89,40 @@ Keep shapes static. Include only deployable information in `state`.
 `privileged_state` may add simulation-only state for the PPO value function.
 Avoid unbounded angles or poorly scaled features when a stable representation
 is available. Update `observation_size` whenever features change.
+
+### Pixel observations and vision PPO
+
+For rendered observations, keep the ordinary environment interface and add
+literal declarations that static validation can parse without importing JAX:
+
+```python
+DEFAULT_CONFIG = {"impl": "warp"}
+NETWORK_SPEC = {"type": "vision_cnn"}
+VISION_SPEC = {
+    "pixel_keys": ["pixels/view_0"],
+    "camera_names": ["fixed"],
+    "resolution": [64, 64],
+    "frame_stack": 3,
+    "channels_per_frame": 1,
+    "value_range": [-0.5, 0.5],
+    "requires_impl": "warp",
+    "nworld_config_key": "vision_config.nworld",
+}
+```
+
+Runtime hooks may return richer versions, such as `network_spec()` with a Brax
+factory. Their shared values must agree with these literal declarations.
+
+Every pixel observation must use a `pixels/` prefix and a static HWC shape.
+The vision CNN consumes all `pixels/*` entries. `policy_obs_key` may add
+deployable state to the actor; it must never point to `privileged_state`.
+`value_obs_key` may expose simulator-only state to the critic. Keep renderer
+world count synchronized with PPO's `num_envs`; SimRig does this through the
+declared `nworld_config_key`.
+
+MJX camera rendering is currently a CUDA/MuJoCo-Warp path. Make that constraint
+explicit with `requires_impl`. Do not replace rendered pixels with state-derived
+proxies and call the result vision training.
 
 ## Rewards and metrics
 
@@ -104,6 +166,9 @@ Do not remove `NOT TRAINABLE YET` until reset and step are implemented. Static
 validation only checks structure. Runtime validation constructs the env and
 executes reset/step. `smoke` JITs reset/step and advances zero actions. Smoke
 training verifies that the PPO pipeline can produce artifacts.
+
+For vision environments, insert `--vision` static and runtime checks before the
+generic smoke. See `examples/vision_cartpole.py` for a complete small reference.
 
 Before a longer run, inspect resets and short rollouts for non-finite values,
 unintended contacts, immediate termination, saturated actions, constant

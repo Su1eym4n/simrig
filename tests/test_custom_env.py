@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
-from simrig.custom_env import is_env_module_path, load_custom_env, resolve_env_label
+from simrig.custom_env import (
+    _ensure_mjx_warp_compat,
+    is_env_module_path,
+    load_custom_env,
+    load_custom_env_metadata,
+    load_custom_env_static_metadata,
+    resolve_env_label,
+)
 from simrig.scaffold import new_env
 from simrig.validate_env import validate_env
 
@@ -96,6 +104,90 @@ class CustomEnvLoaderTests(unittest.TestCase):
             self.assertEqual(env.action_size, 2)
             self.assertEqual(env.config["impl"], "jax")
             self.assertIn("state", env.observation_size)
+
+    def test_load_custom_env_metadata_supports_vision_hooks(self) -> None:
+        source = MINIMAL_ENV + '''\
+
+def network_spec():
+    return {"type": "vision_cnn", "factory": {"policy_obs_key": "state"}}
+
+VISION_SPEC = {"pixel_keys": ["pixels/view_0"], "requires_impl": "warp"}
+
+def training_config():
+    return {"num_timesteps": 1000, "vision": True}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.py"
+            path.write_text(source, encoding="utf-8")
+
+            metadata = load_custom_env_metadata(path)
+
+        self.assertEqual(metadata["network_spec"]["type"], "vision_cnn")
+        self.assertEqual(
+            metadata["network_spec"]["factory"]["policy_obs_key"], "state"
+        )
+        self.assertEqual(metadata["vision_spec"]["requires_impl"], "warp")
+        self.assertEqual(metadata["training_config"]["num_timesteps"], 1000)
+
+    def test_static_metadata_does_not_import_environment_dependencies(self) -> None:
+        source = '''\
+import dependency_that_is_intentionally_unavailable
+
+DEFAULT_CONFIG = {"impl": "warp"}
+NETWORK_SPEC = {"type": "vision_cnn"}
+VISION_SPEC = {
+    "pixel_keys": ["pixels/view_0"],
+    "camera_names": ["fixed"],
+    "requires_impl": "warp",
+}
+TRAINING_CONFIG = {"num_timesteps": 1000}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.py"
+            path.write_text(source, encoding="utf-8")
+
+            metadata = load_custom_env_static_metadata(path)
+
+        self.assertEqual(metadata["default_config"]["impl"], "warp")
+        self.assertEqual(metadata["network_spec"]["type"], "vision_cnn")
+        self.assertEqual(metadata["vision_spec"]["camera_names"], ["fixed"])
+        self.assertEqual(metadata["training_config"]["num_timesteps"], 1000)
+
+    def test_static_metadata_rejects_dynamic_constant(self) -> None:
+        source = '''\
+def build_spec():
+    return {"type": "vision_cnn"}
+
+NETWORK_SPEC = build_spec()
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.py"
+            path.write_text(source, encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "literal mapping"):
+                load_custom_env_static_metadata(path)
+
+    def test_mjx_warp_compat_restores_relocated_types(self) -> None:
+        try:
+            import mujoco.mjx.warp as mjxw
+            from warp.jax_experimental import GraphMode
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        original_graph_mode = mjxw.types.GraphMode
+        original_callback = mjxw.types.Callback
+        try:
+            mjxw.types.GraphMode = int
+            mjxw.types.Callback = None
+
+            changed = _ensure_mjx_warp_compat(SimpleNamespace(impl="warp"))
+
+            self.assertTrue(changed)
+            self.assertIs(mjxw.types.GraphMode, GraphMode)
+            self.assertIs(mjxw.types.Callback, mjxw.mjwp_types.Callback)
+        finally:
+            mjxw.types.GraphMode = original_graph_mode
+            mjxw.types.Callback = original_callback
 
 
 class ValidateRuntimeTests(unittest.TestCase):

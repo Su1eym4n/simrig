@@ -192,8 +192,25 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("--hf-revision", help="Revision for hf:// policy checkpoints.")
     preview_parser.add_argument("--hf-token", help="Hugging Face token for private policy repos.")
     preview_parser.add_argument("--command", type=float, nargs="+")
-    preview_parser.add_argument("--camera")
+    preview_parser.add_argument(
+        "--camera",
+        help=(
+            "Named/numbered MuJoCo camera. In Three.js mode this selects the "
+            "initial Agent Camera inset."
+        ),
+    )
     preview_parser.add_argument("--paused", action="store_true", help="Start the browser preview paused.")
+    preview_parser.add_argument(
+        "--auto-reset",
+        action="store_true",
+        help="Automatically start a new episode after termination.",
+    )
+    preview_parser.add_argument(
+        "--auto-reset-delay",
+        type=float,
+        default=1.5,
+        help="Seconds to preserve the terminal pose before automatic reset.",
+    )
     preview_parser.add_argument(
         "--allow-runtime-mismatch",
         action="store_true",
@@ -221,7 +238,13 @@ def build_parser() -> argparse.ArgumentParser:
     view_model_parser.add_argument("--width", type=int, default=960)
     view_model_parser.add_argument("--height", type=int, default=540)
     view_model_parser.add_argument("--fps", type=int, default=24, help="Browser render loop target FPS.")
-    view_model_parser.add_argument("--camera")
+    view_model_parser.add_argument(
+        "--camera",
+        help=(
+            "Named/numbered MuJoCo camera. In Three.js mode this selects the "
+            "initial Agent Camera inset."
+        ),
+    )
     view_model_parser.add_argument(
         "--render-mode",
         choices=("threejs", "mujoco", "topdown"),
@@ -249,6 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--runtime",
         action="store_true",
         help="Import the module and run construct/reset/step checks when possible.",
+    )
+    validate_env_parser.add_argument(
+        "--vision",
+        action="store_true",
+        help="Require and validate vision-network metadata and pixel observations.",
     )
     validate_env_parser.add_argument("--json", action="store_true")
     validate_env_parser.set_defaults(func=_cmd_validate_env)
@@ -524,6 +552,8 @@ def _cmd_preview(args: argparse.Namespace) -> None:
         render_mode=args.render_mode,
         paused=args.paused,
         fps=args.fps,
+        auto_reset=args.auto_reset,
+        auto_reset_delay=args.auto_reset_delay,
         allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
 
@@ -534,7 +564,11 @@ def _cmd_new_env(args: argparse.Namespace) -> None:
 
 
 def _cmd_validate_env(args: argparse.Namespace) -> int:
-    result = validate_env(args.path, runtime=bool(args.runtime))
+    result = validate_env(
+        args.path,
+        runtime=bool(args.runtime),
+        vision=bool(args.vision),
+    )
     _print(result, as_json=args.json)
     if not args.json:
         status = "passed" if result.passed else "failed"

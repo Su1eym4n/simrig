@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Mapping
+
+from simrig.networks import normalize_network_spec
 
 
 def is_env_module_path(env_ref: str | Path) -> bool:
@@ -42,6 +45,76 @@ def import_env_module(path: Path | str) -> ModuleType:
     return module
 
 
+def load_custom_env_metadata(path: Path | str) -> dict[str, Any]:
+    """Load declarative metadata without constructing the environment.
+
+    Supported optional module hooks are ``network_spec()``, ``vision_spec()``,
+    and ``training_config()``. Uppercase mapping constants with the same names
+    are also accepted for simple modules.
+    """
+    module = import_env_module(path)
+    default_config = _call_optional_mapping(module, "default_config")
+    network_value = _call_or_value(module, "network_spec", "NETWORK_SPEC")
+    vision_value = _call_or_value(module, "vision_spec", "VISION_SPEC")
+    training_value = _call_or_value(module, "training_config", "TRAINING_CONFIG")
+    return {
+        "default_config": default_config,
+        "network_spec": normalize_network_spec(network_value),
+        "vision_spec": _mapping_or_empty(vision_value, "vision_spec"),
+        "training_config": _mapping_or_empty(training_value, "training_config"),
+    }
+
+
+def load_custom_env_static_metadata(path: Path | str) -> dict[str, Any]:
+    """Read literal metadata constants without importing the env module.
+
+    This is the dependency-free contract used by static validation. Runtime
+    hooks remain available through :func:`load_custom_env_metadata` and may
+    enrich these declarations with objects such as a Brax network factory.
+    """
+    env_path = Path(path).expanduser().resolve()
+    if not env_path.is_file():
+        raise FileNotFoundError(f"Custom env module not found: {env_path}")
+    if env_path.suffix != ".py":
+        raise ValueError(f"Custom env module must be a .py file: {env_path}")
+
+    tree = ast.parse(env_path.read_text(encoding="utf-8"), filename=str(env_path))
+    names = {
+        "DEFAULT_CONFIG",
+        "NETWORK_SPEC",
+        "VISION_SPEC",
+        "TRAINING_CONFIG",
+    }
+    values: dict[str, dict[str, Any]] = {}
+    for node in tree.body:
+        name: str | None = None
+        value_node: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                name = target.id
+                value_node = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        if name not in names or value_node is None:
+            continue
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(
+                f"{name} must be a literal mapping for static validation"
+            ) from exc
+        values[name] = _mapping_or_empty(value, name)
+
+    return {
+        "default_config": values.get("DEFAULT_CONFIG", {}),
+        "network_spec": normalize_network_spec(values.get("NETWORK_SPEC")),
+        "vision_spec": values.get("VISION_SPEC", {}),
+        "training_config": values.get("TRAINING_CONFIG", {}),
+    }
+
+
 def load_custom_env(
     path: Path | str,
     *,
@@ -57,6 +130,10 @@ def load_custom_env(
     module = import_env_module(path)
     overrides = dict(config_overrides or {})
 
+    default_config = getattr(module, "default_config", None)
+    config = default_config() if callable(default_config) else None
+    _ensure_mjx_warp_compat(config)
+
     make_env = getattr(module, "make_env", None)
     if callable(make_env):
         try:
@@ -70,11 +147,6 @@ def load_custom_env(
             f"Custom env module {path} must define make_env() or class {class_name}."
         )
 
-    config = None
-    default_config = getattr(module, "default_config", None)
-    if callable(default_config):
-        config = default_config()
-
     if isinstance(config, dict):
         merged = dict(config)
         merged.update(overrides)
@@ -87,6 +159,43 @@ def load_custom_env(
     if overrides:
         return _construct_env(cls, config=overrides, config_overrides=None)
     return _construct_env(cls, config=None, config_overrides=None)
+
+
+def _ensure_mjx_warp_compat(config: Any) -> bool:
+    """Bridge MuJoCo 3.10 to Warp 1.13's relocated GraphMode enum.
+
+    MuJoCo 3.10 imports an internal pre-1.13 Warp module.  Warp 1.13 is the
+    first release with the ``fill_mode`` API used by MuJoCo's tiled Cholesky
+    kernels, so use its public compatibility namespace when the generated
+    MuJoCo types fell back to placeholders.
+    """
+
+    impl = (
+        config.get("impl")
+        if isinstance(config, Mapping)
+        else getattr(config, "impl", None)
+    )
+    if str(impl).lower() != "warp":
+        return False
+
+    try:
+        import mujoco.mjx.warp as mjxw  # type: ignore
+        from warp.jax_experimental import GraphMode  # type: ignore
+    except ImportError:
+        return False
+
+    changed = False
+    if not hasattr(mjxw.types.GraphMode, "WARP"):
+        mjxw.types.GraphMode = GraphMode
+        changed = True
+    if getattr(mjxw.types, "Callback", None) is None and getattr(
+        mjxw,
+        "mjwp_types",
+        None,
+    ) is not None:
+        mjxw.types.Callback = mjxw.mjwp_types.Callback
+        changed = True
+    return changed
 
 
 def _construct_env(cls: type, *, config: Any, config_overrides: dict[str, Any] | None) -> Any:
@@ -107,3 +216,33 @@ def _construct_env(cls: type, *, config: Any, config_overrides: dict[str, Any] |
                 f"Could not construct {cls.__name__} with config/config_overrides. "
                 "Prefer make_env(config_overrides=...) in the module."
             ) from exc
+
+
+def _call_optional_mapping(module: ModuleType, name: str) -> dict[str, Any]:
+    value = getattr(module, name, None)
+    if value is None:
+        return {}
+    if callable(value):
+        value = value()
+    return _mapping_or_empty(value, name)
+
+
+def _call_or_value(module: ModuleType, function_name: str, constant_name: str) -> Any:
+    value = getattr(module, function_name, None)
+    if callable(value):
+        return value()
+    if value is not None:
+        return value
+    return getattr(module, constant_name, None)
+
+
+def _mapping_or_empty(value: Any, label: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            value = to_dict()
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must return a mapping.")
+    return dict(value)

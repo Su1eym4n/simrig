@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import gzip
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import functools
 import json
 from pathlib import Path
 import threading
@@ -16,19 +16,34 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from simrig.browser_render import MujocoFramePump
-from simrig.browser_shell import camera_interaction_script, frame_poll_script, viewer_styles
+from simrig.browser_render import MujocoFramePump, named_camera_names
+from simrig.browser_shell import (
+    agent_camera_panel,
+    agent_camera_script,
+    agent_camera_styles,
+    camera_interaction_script,
+    frame_poll_script,
+    threejs_agent_camera_script,
+    viewer_styles,
+)
+from simrig.networks import make_network_factory
 from simrig.playground_backend import (
     _apply_command,
     _checkpoint_env_overrides,
+    _ensure_checkpoint_vision_runtime,
     _import_training_deps,
     _validate_backend,
     load_env,
 )
-from simrig.presets import resolve_network_factory
-from simrig.rendering import make_tracking_camera, tracking_body_id
+from simrig.presets import resolve_network_factory, resolve_network_type
+from simrig.rendering import (
+    CameraState,
+    configure_headless_mujoco_gl,
+    make_tracking_camera,
+    tracking_body_id,
+)
 from simrig.runtime import verify_checkpoint_runtime
-from simrig.three_scene import geom_transforms, scene_payload
+from simrig.three_scene import camera_transforms, geom_transforms, scene_payload
 
 
 @dataclass
@@ -39,6 +54,16 @@ class PreviewStatus:
     reward: float
     total_reward: float
     done: bool
+    episode: int
+    episode_state: str
+    survival_steps: int
+    last_episode_survival_steps: int | None
+    last_episode_reward: float | None
+    auto_reset: bool
+    auto_reset_delay: float
+    command_supported: bool
+    command_controls: list[dict[str, Any]]
+    command_values: list[float] | None
     command: list[float] | None
     command_applied: bool
     paused: bool
@@ -66,13 +91,17 @@ class PolicyPreviewSession:
         render_mode: str = "threejs",
         paused: bool = False,
         fps: int = 24,
+        auto_reset: bool = False,
+        auto_reset_delay: float = 1.5,
         allow_runtime_mismatch: bool = False,
     ) -> None:
+        configure_headless_mujoco_gl()
         _validate_backend(backend)
         self.runtime_compatibility = verify_checkpoint_runtime(
             checkpoint,
             allow_mismatch=allow_runtime_mismatch,
         )
+        _ensure_checkpoint_vision_runtime(checkpoint)
         self.env_name = env_name
         self.checkpoint = str(checkpoint)
         self.backend = backend
@@ -84,6 +113,12 @@ class PolicyPreviewSession:
         self.total_reward = 0.0
         self.last_reward = 0.0
         self.done = False
+        self.episode = 1
+        self.last_episode_survival_steps: int | None = None
+        self.last_episode_reward: float | None = None
+        self.auto_reset = bool(auto_reset)
+        self.auto_reset_delay = max(0.0, float(auto_reset_delay))
+        self._episode_ended_at: float | None = None
         self.render_mode = render_mode.lower()
         self.fps = max(1, int(fps))
         self.renderer_error: str | None = None
@@ -117,9 +152,10 @@ class PolicyPreviewSession:
             checkpoint,
             small_network=small_network,
         )
-        network_factory = functools.partial(
-            self.ppo_networks.make_ppo_networks,
-            **network_config,
+        network_factory = make_network_factory(
+            resolve_network_type(checkpoint),
+            network_config,
+            ppo_networks=self.ppo_networks,
         )
         networks = network_factory(
             self.env.observation_size,
@@ -134,6 +170,12 @@ class PolicyPreviewSession:
         self.step_fn = self.jax.jit(self.env.step)
         self.rng = self.jax.random.PRNGKey(seed)
         self.state = self.reset_fn(self.rng)
+        self.command_controls = _command_controls(self.env, self.state)
+        if self.command is not None and len(self.command) != len(self.command_controls):
+            raise ValueError(
+                f"Environment accepts {len(self.command_controls)} command values; "
+                f"received {len(self.command)}."
+            )
         self._apply_current_command()
 
         self.mj_data = self.mujoco.MjData(self.env.mj_model)
@@ -150,6 +192,18 @@ class PolicyPreviewSession:
             camera,
         )
         self._frame_pump: MujocoFramePump | None = None
+        self.agent_camera_names = named_camera_names(self.mujoco, self.env.mj_model)
+        self.agent_camera_name = self._initial_agent_camera(camera)
+        self._agent_frame_pump: MujocoFramePump | None = None
+        self._agent_pump_lock = threading.Lock()
+        self._agent_width = min(360, max(160, width))
+        self._agent_height = max(120, round(self._agent_width * 3 / 4))
+        self._agent_fps = min(12, self.fps)
+        self.physics_rate_hz = _rate_hz(getattr(self.env.mj_model.opt, "timestep", None))
+        self.policy_observation_rate_hz = _rate_hz(getattr(self.env, "dt", None))
+        self.episode_horizon = _checkpoint_episode_horizon(checkpoint) or _episode_horizon(
+            self.env
+        )
         self._rollout_thread: threading.Thread | None = None
         self._running = True
         if self.render_mode == "threejs":
@@ -179,13 +233,7 @@ class PolicyPreviewSession:
 
     def reset(self) -> None:
         with self._lock:
-            self.rng = self.jax.random.PRNGKey(0)
-            self.state = self.reset_fn(self.rng)
-            self.step_count = 0
-            self.total_reward = 0.0
-            self.last_reward = 0.0
-            self.done = False
-            self._apply_current_command()
+            self._reset_unlocked()
 
     def set_paused(self, paused: bool) -> None:
         with self._lock:
@@ -193,8 +241,20 @@ class PolicyPreviewSession:
 
     def set_command(self, command: list[float] | None) -> None:
         with self._lock:
+            if command is not None:
+                if not self.command_controls:
+                    raise ValueError(f"Environment {self.env_name} does not support commands.")
+                if len(command) != len(self.command_controls):
+                    raise ValueError(
+                        f"Environment accepts {len(self.command_controls)} command values; "
+                        f"received {len(command)}."
+                    )
             self.command = command
             self._apply_current_command()
+
+    def set_auto_reset(self, enabled: bool) -> None:
+        with self._lock:
+            self.auto_reset = bool(enabled)
 
     def status(self) -> PreviewStatus:
         with self._lock:
@@ -204,6 +264,7 @@ class PolicyPreviewSession:
         with self._lock:
             payload = self._status_unlocked().__dict__
             payload.update(self._renderer_stats())
+            payload.update(self._rate_payload())
             return payload
 
     def state_payload(self) -> dict[str, Any]:
@@ -212,7 +273,13 @@ class PolicyPreviewSession:
         with self._lock:
             payload = self._status_unlocked().__dict__
             payload.update(self._renderer_stats())
+            payload.update(self._rate_payload())
             payload["transforms"] = geom_transforms(self.env.mj_model, self.mj_data)
+            payload["authored_cameras"] = camera_transforms(
+                self.mujoco,
+                self.env.mj_model,
+                self.mj_data,
+            )
             payload["tracking_position"] = np.asarray(
                 self.mj_data.xpos[self._tracking_body_id()],
                 dtype=float,
@@ -229,14 +296,21 @@ class PolicyPreviewSession:
                     model_name=self.env_name,
                 )
                 self._scene_payload.pop("transforms", None)
+                self._scene_payload.pop("authored_cameras", None)
             return {
                 **self._scene_payload,
                 "transforms": geom_transforms(self.env.mj_model, self.mj_data),
+                "authored_cameras": camera_transforms(
+                    self.mujoco,
+                    self.env.mj_model,
+                    self.mj_data,
+                ),
                 "tracking_position": np.asarray(
                     self.mj_data.xpos[self._tracking_body_id()],
                     dtype=float,
                 ).tolist(),
                 "fps_target": self.fps,
+                **self._rate_payload(),
             }
 
     def _status_unlocked(self) -> PreviewStatus:
@@ -247,6 +321,16 @@ class PolicyPreviewSession:
             reward=self.last_reward,
             total_reward=self.total_reward,
             done=self.done,
+            episode=self.episode,
+            episode_state="ended" if self.done else "paused" if self.paused else "running",
+            survival_steps=self.step_count,
+            last_episode_survival_steps=self.last_episode_survival_steps,
+            last_episode_reward=self.last_episode_reward,
+            auto_reset=self.auto_reset,
+            auto_reset_delay=self.auto_reset_delay,
+            command_supported=bool(self.command_controls),
+            command_controls=list(self.command_controls),
+            command_values=self._command_values_unlocked(),
             command=list(self.command) if self.command is not None else None,
             command_applied=self.command_applied,
             paused=self.paused,
@@ -254,6 +338,26 @@ class PolicyPreviewSession:
             frame_busy=False,
             renderer_error=self._renderer_stats()["renderer_error"],
         )
+
+    def _rate_payload(self) -> dict[str, Any]:
+        return {
+            "playback_rate_hz": self.fps,
+            "physics_rate_hz": self.physics_rate_hz,
+            "policy_observation_rate_hz": self.policy_observation_rate_hz,
+            "sensor_display_rate_hz": self._agent_fps if self.agent_camera_names else None,
+            "episode_horizon": self.episode_horizon,
+        }
+
+    def _command_values_unlocked(self) -> list[float] | None:
+        if not self.command_controls:
+            return None
+        if self.command is not None:
+            return list(self.command)
+        info = getattr(self.state, "info", {})
+        values = info.get("command") if isinstance(info, Mapping) else None
+        if values is None:
+            return None
+        return np.asarray(values, dtype=float).reshape(-1).tolist()
 
     def _renderer_stats(self) -> dict[str, Any]:
         if self._frame_pump is not None:
@@ -276,12 +380,82 @@ class PolicyPreviewSession:
             raise RuntimeError("Frame streaming is disabled in threejs mode.")
         return self._frame_pump.get_jpeg()
 
+    def agent_cameras_payload(self) -> dict[str, Any]:
+        stats = (
+            self._agent_frame_pump.stats()
+            if self._agent_frame_pump is not None
+            else {"fps_target": self._agent_fps, "renderer_error": None}
+        )
+        return {
+            "cameras": list(self.agent_camera_names),
+            "selected": self.agent_camera_name,
+            "fps_target": stats["fps_target"],
+            "renderer_error": stats["renderer_error"],
+            "source": "mujoco-offscreen",
+        }
+
+    def select_agent_camera(self, name: str) -> dict[str, Any]:
+        if name not in self.agent_camera_names:
+            choices = ", ".join(self.agent_camera_names) or "none"
+            raise ValueError(f"Unknown agent camera: {name}. Available: {choices}")
+        self.agent_camera_name = name
+        if self._agent_frame_pump is not None:
+            self._agent_frame_pump.select_fixed_camera(self._agent_camera_ref(name))
+        return self.agent_cameras_payload()
+
+    def agent_frame_jpeg(self) -> bytes:
+        pump = self._ensure_agent_frame_pump()
+        if pump is None:
+            raise RuntimeError("No authored MuJoCo cameras are available.")
+        return pump.get_jpeg()
+
+    def _ensure_agent_frame_pump(self) -> MujocoFramePump | None:
+        if self.agent_camera_name is None:
+            return None
+        with self._agent_pump_lock:
+            if self._agent_frame_pump is None:
+                self._agent_frame_pump = MujocoFramePump(
+                    self.mujoco,
+                    self.env.mj_model,
+                    self.mj_data,
+                    width=self._agent_width,
+                    height=self._agent_height,
+                    camera=self._agent_camera_ref(self.agent_camera_name),
+                    camera_state=CameraState(interactive=False),
+                    image_module=self.Image,
+                    fps=self._agent_fps,
+                    render_mode="mujoco",
+                    scene_lock=self._lock,
+                )
+            return self._agent_frame_pump
+
     def close(self) -> None:
         self._running = False
         if self._frame_pump is not None:
             self._frame_pump.close()
+        if self._agent_frame_pump is not None:
+            self._agent_frame_pump.close()
         if self._rollout_thread is not None:
             self._rollout_thread.join(timeout=2.0)
+
+    def _initial_agent_camera(self, requested: str | int | None) -> str | None:
+        if not self.agent_camera_names:
+            return None
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(self.agent_camera_names):
+                return self.agent_camera_names[index]
+        if isinstance(requested, str) and requested in self.agent_camera_names:
+            return requested
+        return self.agent_camera_names[0]
+
+    def _agent_camera_ref(self, name: str) -> str | int:
+        camera_id = self.mujoco.mj_name2id(
+            self.env.mj_model,
+            self.mujoco.mjtObj.mjOBJ_CAMERA,
+            name,
+        )
+        return name if camera_id >= 0 else self.agent_camera_names.index(name)
 
     def _run_rollout(self) -> None:
         interval = 1.0 / self.fps
@@ -296,6 +470,14 @@ class PolicyPreviewSession:
             time.sleep(max(0.0, interval - elapsed))
 
     def _advance_rollout(self) -> None:
+        if (
+            self.done
+            and self.auto_reset
+            and not self.paused
+            and self._episode_ended_at is not None
+            and time.monotonic() - self._episode_ended_at >= self.auto_reset_delay
+        ):
+            self._reset_unlocked()
         if not self.paused and not self.done:
             for _ in range(self.frame_skip):
                 self._step_once_unlocked()
@@ -312,6 +494,22 @@ class PolicyPreviewSession:
         self.total_reward += self.last_reward
         self.step_count += 1
         self.done = bool(self.state.done)
+        if self.done:
+            self.last_episode_survival_steps = self.step_count
+            self.last_episode_reward = self.total_reward
+            self._episode_ended_at = time.monotonic()
+
+    def _reset_unlocked(self) -> None:
+        self.rng, reset_rng = self.jax.random.split(self.rng)
+        self.state = self.reset_fn(reset_rng)
+        self.episode += 1
+        self.step_count = 0
+        self.total_reward = 0.0
+        self.last_reward = 0.0
+        self.done = False
+        self._episode_ended_at = None
+        self.command_controls = _command_controls(self.env, self.state)
+        self._apply_current_command()
 
     def _apply_current_command(self) -> None:
         if self.command is None:
@@ -417,6 +615,117 @@ class PolicyPreviewSession:
         return np.asarray(image)
 
 
+def _command_controls(env: Any, state: Any) -> list[dict[str, Any]]:
+    """Describe editable command axes only when the environment exposes them."""
+    declared: Any = None
+    for target in (env, getattr(env, "unwrapped", None)):
+        if target is None:
+            continue
+        declared = getattr(target, "command_spec", None)
+        if callable(declared):
+            declared = declared()
+        if declared is not None:
+            break
+
+    info = getattr(state, "info", {})
+    command = info.get("command") if isinstance(info, Mapping) else None
+    if declared is None and command is None:
+        return []
+
+    if isinstance(declared, Mapping):
+        declared = declared.get("controls", declared.get("fields"))
+    if declared is None:
+        size = int(np.asarray(command).size)
+        if size == 3:
+            declared = [
+                {"key": "forward_x", "label": "Forward X", "unit": "m/s"},
+                {"key": "lateral_y", "label": "Lateral Y", "unit": "m/s"},
+                {"key": "yaw", "label": "Yaw", "unit": "rad/s"},
+            ]
+        else:
+            declared = [f"Command {index + 1}" for index in range(size)]
+    if isinstance(declared, (str, bytes)) or not isinstance(declared, Sequence):
+        raise ValueError("command_spec() must return a sequence or a mapping with controls.")
+
+    controls: list[dict[str, Any]] = []
+    used_keys: set[str] = set()
+    for index, item in enumerate(declared):
+        if isinstance(item, str):
+            raw = {"key": item, "label": item}
+        elif isinstance(item, Mapping):
+            raw = dict(item)
+        else:
+            raise ValueError("Each command control must be a string or mapping.")
+        label = str(raw.get("label", raw.get("name", raw.get("key", f"Command {index + 1}"))))
+        key = _control_key(str(raw.get("key", raw.get("name", label))), index)
+        if key in used_keys:
+            key = f"{key}_{index + 1}"
+        used_keys.add(key)
+        control: dict[str, Any] = {
+            "key": key,
+            "label": label,
+            "step": float(raw.get("step", 0.1)),
+        }
+        for name in ("unit", "min", "max"):
+            if raw.get(name) is not None:
+                control[name] = raw[name]
+        controls.append(control)
+
+    if command is not None and int(np.asarray(command).size) != len(controls):
+        raise ValueError(
+            "command_spec() control count must match the environment command vector size."
+        )
+    return controls
+
+
+def _control_key(value: str, index: int) -> str:
+    key = "".join(character.lower() if character.isalnum() else "_" for character in value)
+    key = "_".join(part for part in key.split("_") if part)
+    return key or f"command_{index + 1}"
+
+
+def _rate_hz(timestep: Any) -> float | None:
+    try:
+        seconds = float(timestep)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(seconds) or seconds <= 0:
+        return None
+    return round(1.0 / seconds, 3)
+
+
+def _episode_horizon(env: Any) -> int | None:
+    for target in (env, getattr(env, "unwrapped", None)):
+        if target is None:
+            continue
+        for name in ("config", "_config"):
+            config = getattr(target, name, None)
+            if isinstance(config, Mapping):
+                value = config.get("episode_length")
+            else:
+                value = getattr(config, "episode_length", None)
+            if value is not None:
+                return int(value)
+    return None
+
+
+def _checkpoint_episode_horizon(checkpoint: Path | str) -> int | None:
+    checkpoint_path = Path(checkpoint).expanduser()
+    config_path = (
+        checkpoint_path / "config.json"
+        if checkpoint_path.is_dir()
+        else checkpoint_path.parent / "config.json"
+    )
+    if not config_path.is_file():
+        return None
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        value = payload.get("config", {}).get("episode_length")
+        return int(value) if value is not None else None
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def serve_policy_preview(
     checkpoint: Path | str,
     *,
@@ -434,6 +743,8 @@ def serve_policy_preview(
     render_mode: str = "threejs",
     paused: bool = False,
     fps: int = 24,
+    auto_reset: bool = False,
+    auto_reset_delay: float = 1.5,
     allow_runtime_mismatch: bool = False,
 ) -> None:
     session = PolicyPreviewSession(
@@ -450,6 +761,8 @@ def serve_policy_preview(
         render_mode=render_mode,
         paused=paused,
         fps=fps,
+        auto_reset=auto_reset,
+        auto_reset_delay=auto_reset_delay,
         allow_runtime_mismatch=allow_runtime_mismatch,
     )
 
@@ -463,6 +776,20 @@ def serve_policy_preview(
                     self.send_error(HTTPStatus.NOT_FOUND, "Frame streaming disabled")
                 else:
                     self._send_bytes(session.frame_jpeg(), "image/jpeg")
+            elif parsed.path == "/agent-frame.jpg":
+                try:
+                    self._send_bytes(session.agent_frame_jpeg(), "image/jpeg")
+                except RuntimeError as exc:
+                    self.send_error(HTTPStatus.NOT_FOUND, str(exc))
+            elif parsed.path == "/agent-cameras.json":
+                self._send_json(session.agent_cameras_payload())
+            elif parsed.path == "/agent-camera":
+                query = parse_qs(parsed.query)
+                name = query.get("name", [""])[0]
+                try:
+                    self._send_json(session.select_agent_camera(name))
+                except (RuntimeError, ValueError) as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             elif parsed.path == "/scene.json":
                 self._send_json(session.scene_payload(), compress=True)
             elif parsed.path == "/state.json":
@@ -475,8 +802,15 @@ def serve_policy_preview(
                 self._send_json(session.status_payload())
             elif parsed.path == "/command":
                 query = parse_qs(parsed.query)
-                command_values = _command_from_query(query)
-                session.set_command(command_values)
+                try:
+                    command_values = _command_from_query(query)
+                    session.set_command(command_values)
+                    self._send_json(session.status_payload())
+                except ValueError as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            elif parsed.path == "/auto-reset":
+                query = parse_qs(parsed.query)
+                session.set_auto_reset(query.get("enabled", ["0"])[0] == "1")
                 self._send_json(session.status_payload())
             elif parsed.path == "/pause":
                 session.set_paused(True)
@@ -538,6 +872,8 @@ def serve_policy_preview(
 def _command_from_query(query: dict[str, list[str]]) -> list[float] | None:
     if "clear" in query:
         return None
+    if "value" in query:
+        return [float(raw) for raw in query["value"]]
     values = []
     for key in ("x", "y", "yaw"):
         raw = query.get(key, ["0"])[0]
@@ -561,11 +897,23 @@ def _threejs_html() -> str:
   <title>SimRig Preview</title>
   <style>"""
         + viewer_styles(sidebar_width=320)
+        + agent_camera_styles()
         + """
     #three-view { width: 100%; height: 100%; display: block; outline: none; }
     #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #cbd5e1; background: #070b12; z-index: 2; }
     #loading.error { color: #fca5a5; padding: 28px; text-align: center; white-space: pre-wrap; }
     #render-meta { color: #94a3b8; font-size: 12px; margin: -4px 0 12px; }
+    #episode-state { border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: #0f172a; }
+    #episode-state.ended { border-color: #ef4444; background: #2a1118; color: #fecaca; }
+    #episode-state.paused { border-color: #f59e0b; color: #fde68a; }
+    #run-facts { color: #94a3b8; font-size: 12px; line-height: 1.55; margin-bottom: 14px; }
+    #command-section[hidden] { display: none; }
+    #command-section { border-top: 1px solid #263244; padding-top: 12px; margin-top: 4px; }
+    #command-section h2 { font-size: 14px; margin: 0 0 10px; }
+    .command-label { display: flex; justify-content: space-between; gap: 8px; }
+    .unit { color: #64748b; font-weight: 400; }
+    .toggle { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: #cbd5e1; }
+    .toggle input { width: auto; margin: 0; }
   </style>
   <script type="importmap">
     {"imports": {
@@ -580,16 +928,23 @@ def _threejs_html() -> str:
       <canvas id="three-view" aria-label="Interactive SimRig policy preview"></canvas>
       <div id="loading">Loading rollout scene…</div>
       <div id="hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+"""
+        + agent_camera_panel()
+        + """
     </div>
   </main>
   <aside>
     <h1>SimRig Preview</h1>
     <div id="render-meta">Three.js · loading rollout…</div>
-    <label>Forward X</label><input id="x" type="number" step="0.1" value="0">
-    <label>Lateral Y</label><input id="y" type="number" step="0.1" value="0">
-    <label>Yaw</label><input id="yaw" type="number" step="0.1" value="0">
-    <button id="set-command">Set Command</button>
-    <button class="secondary" id="clear-command">Clear</button>
+    <div id="episode-state">Episode 1 · starting</div>
+    <div id="run-facts">Loading simulation rates…</div>
+    <section id="command-section" hidden>
+      <h2>Commands</h2>
+      <div id="command-controls"></div>
+      <button id="set-command">Set Command</button>
+      <button class="secondary" id="clear-command">Clear</button>
+    </section>
+    <label class="toggle"><input id="auto-reset" type="checkbox"> Auto-reset ended episodes</label>
     <button class="secondary" id="pause">Pause</button>
     <button class="secondary" id="resume">Resume</button>
     <button class="secondary" id="reset">Reset</button>
@@ -606,15 +961,21 @@ def _threejs_html() -> str:
     const loadingEl = document.getElementById('loading');
     const statusEl = document.getElementById('status');
     const renderMetaEl = document.getElementById('render-meta');
-    const xInput = document.getElementById('x');
-    const yInput = document.getElementById('y');
-    const yawInput = document.getElementById('yaw');
+    const episodeStateEl = document.getElementById('episode-state');
+    const runFactsEl = document.getElementById('run-facts');
+    const commandSectionEl = document.getElementById('command-section');
+    const commandControlsEl = document.getElementById('command-controls');
+    const autoResetEl = document.getElementById('auto-reset');
     const objects = new Map();
     const meshGeometries = new Map();
     let controlsInitialized = false;
+    let commandSignature = '';
     let trackingPosition = null;
     let stateTimer = null;
     let targetPollMs = 33;
+"""
+        + agent_camera_script()
+        + """
 
     const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: false});
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -659,6 +1020,9 @@ def _threejs_html() -> str:
 
     const modelRoot = new THREE.Group();
     scene.add(modelRoot);
+"""
+        + threejs_agent_camera_script()
+        + """
 
     function materialFor(geom) {
       const [r, g, b, a] = geom.rgba;
@@ -775,6 +1139,7 @@ def _threejs_html() -> str:
     function animate() {
       orbit.update();
       renderer.render(scene, camera);
+      renderAgentCameraEmulation();
       requestAnimationFrame(animate);
     }
 
@@ -783,6 +1148,7 @@ def _threejs_html() -> str:
       if (!res.ok) throw new Error(`scene request failed (${res.status})`);
       const payload = await res.json();
       targetPollMs = Math.max(16, Math.round(1000 / (payload.fps_target || 24)));
+      updateAuthoredCameras(payload.authored_cameras);
 
       for (const mesh of payload.meshes) {
         const geometry = new THREE.BufferGeometry();
@@ -825,13 +1191,54 @@ def _threejs_html() -> str:
     function displayStatus(status) {
       const copy = {...status};
       delete copy.transforms;
+      delete copy.authored_cameras;
       delete copy.tracking_position;
       statusEl.textContent = JSON.stringify(copy, null, 2);
-      renderMetaEl.textContent = `${status.env_name} · step ${status.step} · ${status.fps_target || 24} Hz physics · display-rate WebGL`;
-      if (!controlsInitialized && Array.isArray(status.command)) {
-        xInput.value = status.command[0] ?? 0;
-        yInput.value = status.command[1] ?? 0;
-        yawInput.value = status.command[2] ?? 0;
+      renderMetaEl.textContent = `${status.env_name} · ${status.playback_rate_hz || status.fps_target || 24} Hz playback · display-rate WebGL`;
+      episodeStateEl.className = status.episode_state || '';
+      episodeStateEl.textContent = status.done
+        ? `Episode ${status.episode} ended · survived ${status.survival_steps} steps`
+        : `Episode ${status.episode} · ${status.episode_state} · ${status.survival_steps} steps`;
+      const rate = value => value == null ? 'n/a' : `${value} Hz`;
+      const horizon = status.episode_horizon == null ? 'n/a' : `${status.episode_horizon} steps`;
+      const lastEpisode = status.last_episode_survival_steps == null ? '' : ` · last episode ${status.last_episode_survival_steps} steps`;
+      runFactsEl.textContent = `Physics ${rate(status.physics_rate_hz)} · policy observations ${rate(status.policy_observation_rate_hz)} · Sensor display ${rate(status.sensor_display_rate_hz)} · horizon ${horizon}${lastEpisode}`;
+      autoResetEl.checked = Boolean(status.auto_reset);
+      renderCommandControls(status);
+    }
+
+    function renderCommandControls(status) {
+      const controls = Array.isArray(status.command_controls) ? status.command_controls : [];
+      commandSectionEl.hidden = !status.command_supported || controls.length === 0;
+      if (commandSectionEl.hidden) return;
+      const nextSignature = JSON.stringify(controls);
+      if (nextSignature !== commandSignature) {
+        commandControlsEl.replaceChildren();
+        controls.forEach((control, index) => {
+          const label = document.createElement('label');
+          label.className = 'command-label';
+          label.textContent = control.label;
+          if (control.unit) {
+            const unit = document.createElement('span');
+            unit.className = 'unit';
+            unit.textContent = control.unit;
+            label.appendChild(unit);
+          }
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.step = control.step ?? 0.1;
+          if (control.min != null) input.min = control.min;
+          if (control.max != null) input.max = control.max;
+          input.dataset.commandIndex = index;
+          commandControlsEl.append(label, input);
+        });
+        commandSignature = nextSignature;
+        controlsInitialized = false;
+      }
+      if (!controlsInitialized && Array.isArray(status.command_values)) {
+        commandControlsEl.querySelectorAll('input').forEach((input, index) => {
+          input.value = status.command_values[index] ?? 0;
+        });
         controlsInitialized = true;
       }
     }
@@ -843,6 +1250,7 @@ def _threejs_html() -> str:
         if (!res.ok) throw new Error(`state request failed (${res.status})`);
         const status = await res.json();
         updateTransforms(status.transforms);
+        updateAuthoredCameras(status.authored_cameras);
         followRobot(status.tracking_position);
         displayStatus(status);
       } catch (err) {
@@ -858,7 +1266,8 @@ def _threejs_html() -> str:
     }
 
     async function setCommand() {
-      const params = new URLSearchParams({x: xInput.value, y: yInput.value, yaw: yawInput.value});
+      const params = new URLSearchParams();
+      commandControlsEl.querySelectorAll('input').forEach(input => params.append('value', input.value));
       await call('/command?' + params.toString());
     }
 
@@ -869,6 +1278,7 @@ def _threejs_html() -> str:
 
     document.getElementById('set-command').addEventListener('click', setCommand);
     document.getElementById('clear-command').addEventListener('click', clearCommand);
+    autoResetEl.addEventListener('change', () => call(`/auto-reset?enabled=${autoResetEl.checked ? 1 : 0}`));
     document.getElementById('pause').addEventListener('click', () => call('/pause'));
     document.getElementById('resume').addEventListener('click', () => call('/resume'));
     document.getElementById('reset').addEventListener('click', () => call('/reset'));
@@ -878,7 +1288,7 @@ def _threejs_html() -> str:
     animate();
 
     try {
-      await loadScene();
+      await Promise.all([loadScene(), initializeAgentCamera()]);
       await refreshState();
     } catch (err) {
       loadingEl.className = 'error';
@@ -900,7 +1310,19 @@ def _frame_html() -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SimRig Preview</title>
-  <style>{viewer_styles(sidebar_width=320)}</style>
+  <style>{viewer_styles(sidebar_width=320)}
+    #episode-state {{ border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: #0f172a; }}
+    #episode-state.ended {{ border-color: #ef4444; background: #2a1118; color: #fecaca; }}
+    #episode-state.paused {{ border-color: #f59e0b; color: #fde68a; }}
+    #run-facts {{ color: #94a3b8; font-size: 12px; line-height: 1.55; margin-bottom: 14px; }}
+    #command-section[hidden] {{ display: none; }}
+    #command-section {{ border-top: 1px solid #263244; padding-top: 12px; margin-top: 4px; }}
+    #command-section h2 {{ font-size: 14px; margin: 0 0 10px; }}
+    .command-label {{ display: flex; justify-content: space-between; gap: 8px; }}
+    .unit {{ color: #64748b; font-weight: 400; }}
+    .toggle {{ display: flex; align-items: center; gap: 8px; margin: 10px 0; color: #cbd5e1; }}
+    .toggle input {{ width: auto; margin: 0; }}
+  </style>
 </head>
 <body>
   <main>
@@ -911,11 +1333,15 @@ def _frame_html() -> str:
   </main>
   <aside>
     <h1>SimRig Preview</h1>
-    <label>Forward X</label><input id="x" type="number" step="0.1" value="0">
-    <label>Lateral Y</label><input id="y" type="number" step="0.1" value="0">
-    <label>Yaw</label><input id="yaw" type="number" step="0.1" value="0">
-    <button onclick="setCommand()">Set Command</button>
-    <button class="secondary" onclick="clearCommand()">Clear</button>
+    <div id="episode-state">Episode 1 · starting</div>
+    <div id="run-facts">Loading simulation rates…</div>
+    <section id="command-section" hidden>
+      <h2>Commands</h2>
+      <div id="command-controls"></div>
+      <button onclick="setCommand()">Set Command</button>
+      <button class="secondary" onclick="clearCommand()">Clear</button>
+    </section>
+    <label class="toggle"><input id="auto-reset" type="checkbox"> Auto-reset ended episodes</label>
     <button class="secondary" onclick="call('/pause')">Pause</button>
     <button class="secondary" onclick="call('/resume')">Resume</button>
     <button class="secondary" onclick="call('/reset')">Reset</button>
@@ -925,10 +1351,13 @@ def _frame_html() -> str:
   <script>
     const frame = document.getElementById('frame');
     const statusEl = document.getElementById('status');
-    const xInput = document.getElementById('x');
-    const yInput = document.getElementById('y');
-    const yawInput = document.getElementById('yaw');
+    const episodeStateEl = document.getElementById('episode-state');
+    const runFactsEl = document.getElementById('run-facts');
+    const commandSectionEl = document.getElementById('command-section');
+    const commandControlsEl = document.getElementById('command-controls');
+    const autoResetEl = document.getElementById('auto-reset');
     let controlsInitialized = false;
+    let commandSignature = '';
     {camera_interaction_script()}
     {frame_poll_script(poll_ms=33)}
     bindCameraControls(frame);
@@ -938,23 +1367,62 @@ def _frame_html() -> str:
         const status = await res.json();
         statusEl.textContent = JSON.stringify(status, null, 2);
         applyCameraFromStatus(status);
-        if (!controlsInitialized && Array.isArray(status.command)) {{
-          xInput.value = status.command[0] ?? 0;
-          yInput.value = status.command[1] ?? 0;
-          yawInput.value = status.command[2] ?? 0;
-          controlsInitialized = true;
-        }}
+        episodeStateEl.className = status.episode_state || '';
+        episodeStateEl.textContent = status.done
+          ? `Episode ${{status.episode}} ended · survived ${{status.survival_steps}} steps`
+          : `Episode ${{status.episode}} · ${{status.episode_state}} · ${{status.survival_steps}} steps`;
+        const rate = value => value == null ? 'n/a' : `${{value}} Hz`;
+        const horizon = status.episode_horizon == null ? 'n/a' : `${{status.episode_horizon}} steps`;
+        const lastEpisode = status.last_episode_survival_steps == null ? '' : ` · last episode ${{status.last_episode_survival_steps}} steps`;
+        runFactsEl.textContent = `Physics ${{rate(status.physics_rate_hz)}} · policy observations ${{rate(status.policy_observation_rate_hz)}} · Sensor display ${{rate(status.sensor_display_rate_hz)}} · horizon ${{horizon}}${{lastEpisode}}`;
+        autoResetEl.checked = Boolean(status.auto_reset);
+        renderCommandControls(status);
       }} catch (err) {{
         statusEl.textContent = String(err);
       }}
     }}
     async function call(path) {{ await fetch(path); await refreshStatus(); }}
-    async function setCommand() {{
-      const x = xInput.value;
-      const y = yInput.value;
-      const yaw = yawInput.value;
-      await call(`/command?x=${{x}}&y=${{y}}&yaw=${{yaw}}`);
+    function renderCommandControls(status) {{
+      const controls = Array.isArray(status.command_controls) ? status.command_controls : [];
+      commandSectionEl.hidden = !status.command_supported || controls.length === 0;
+      if (commandSectionEl.hidden) return;
+      const nextSignature = JSON.stringify(controls);
+      if (nextSignature !== commandSignature) {{
+        commandControlsEl.replaceChildren();
+        controls.forEach((control, index) => {{
+          const label = document.createElement('label');
+          label.className = 'command-label';
+          label.textContent = control.label;
+          if (control.unit) {{
+            const unit = document.createElement('span');
+            unit.className = 'unit';
+            unit.textContent = control.unit;
+            label.appendChild(unit);
+          }}
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.step = control.step ?? 0.1;
+          if (control.min != null) input.min = control.min;
+          if (control.max != null) input.max = control.max;
+          input.dataset.commandIndex = index;
+          commandControlsEl.append(label, input);
+        }});
+        commandSignature = nextSignature;
+        controlsInitialized = false;
+      }}
+      if (!controlsInitialized && Array.isArray(status.command_values)) {{
+        commandControlsEl.querySelectorAll('input').forEach((input, index) => {{
+          input.value = status.command_values[index] ?? 0;
+        }});
+        controlsInitialized = true;
+      }}
     }}
+    async function setCommand() {{
+      const params = new URLSearchParams();
+      commandControlsEl.querySelectorAll('input').forEach(input => params.append('value', input.value));
+      await call('/command?' + params.toString());
+    }}
+    autoResetEl.addEventListener('change', () => call(`/auto-reset?enabled=${{autoResetEl.checked ? 1 : 0}}`));
     async function clearCommand() {{
       controlsInitialized = false;
       await call('/command?clear=1');

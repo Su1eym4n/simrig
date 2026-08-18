@@ -14,11 +14,24 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from simrig.browser_render import MujocoFramePump
-from simrig.browser_shell import camera_interaction_script, frame_poll_script, viewer_styles
+from simrig.browser_render import MujocoFramePump, named_camera_names
+from simrig.browser_shell import (
+    agent_camera_panel,
+    agent_camera_script,
+    agent_camera_styles,
+    camera_interaction_script,
+    frame_poll_script,
+    threejs_agent_camera_script,
+    viewer_styles,
+)
 from simrig.mujoco_backend import _import_mujoco, resolve_model_path
-from simrig.rendering import make_tracking_camera, tracking_body_id
-from simrig.three_scene import geom_transforms, scene_payload
+from simrig.rendering import (
+    CameraState,
+    configure_headless_mujoco_gl,
+    make_tracking_camera,
+    tracking_body_id,
+)
+from simrig.three_scene import camera_transforms, geom_transforms, scene_payload
 
 
 @dataclass(frozen=True)
@@ -173,6 +186,7 @@ class ModelViewSession:
         fps: int = 24,
     ) -> None:
         self.model_path = resolve_model_path(model_or_xml, menagerie)
+        configure_headless_mujoco_gl()
         self.mujoco = _import_mujoco()
         try:
             from PIL import Image  # type: ignore
@@ -213,6 +227,13 @@ class ModelViewSession:
             camera,
         )
         self._frame_pump: MujocoFramePump | None = None
+        self.agent_camera_names = named_camera_names(self.mujoco, self.model)
+        self.agent_camera_name = self._initial_agent_camera(camera)
+        self._agent_frame_pump: MujocoFramePump | None = None
+        self._agent_pump_lock = threading.Lock()
+        self._agent_width = min(360, max(160, width))
+        self._agent_height = max(120, round(self._agent_width * 3 / 4))
+        self._agent_fps = min(12, max(1, int(fps)))
         if self.render_mode != "threejs":
             self._frame_pump = MujocoFramePump(
                 self.mujoco,
@@ -302,6 +323,11 @@ class ModelViewSession:
                 "fps_target": pump_stats["fps_target"],
                 "camera": pump_stats["camera"],
                 "transforms": self.geom_transforms(),
+                "authored_cameras": camera_transforms(
+                    self.mujoco,
+                    self.model,
+                    self.data,
+                ),
                 "controls": [
                     {
                         "joint_id": control.joint_id,
@@ -332,9 +358,15 @@ class ModelViewSession:
                 model_name=self.model_path.parent.name or self.model_path.stem,
             )
             self._scene_payload.pop("transforms", None)
+            self._scene_payload.pop("authored_cameras", None)
         return {
             **self._scene_payload,
             "transforms": self.geom_transforms(),
+            "authored_cameras": camera_transforms(
+                self.mujoco,
+                self.model,
+                self.data,
+            ),
         }
 
     def geom_transforms(self) -> list[dict[str, Any]]:
@@ -345,9 +377,79 @@ class ModelViewSession:
             raise RuntimeError("Frame streaming is disabled in threejs mode.")
         return self._frame_pump.get_jpeg()
 
+    def agent_cameras_payload(self) -> dict[str, Any]:
+        stats = (
+            self._agent_frame_pump.stats()
+            if self._agent_frame_pump is not None
+            else {"fps_target": self._agent_fps, "renderer_error": None}
+        )
+        return {
+            "cameras": list(self.agent_camera_names),
+            "selected": self.agent_camera_name,
+            "fps_target": stats["fps_target"],
+            "renderer_error": stats["renderer_error"],
+            "source": "mujoco-offscreen",
+        }
+
+    def select_agent_camera(self, name: str) -> dict[str, Any]:
+        if name not in self.agent_camera_names:
+            choices = ", ".join(self.agent_camera_names) or "none"
+            raise ValueError(f"Unknown agent camera: {name}. Available: {choices}")
+        self.agent_camera_name = name
+        if self._agent_frame_pump is not None:
+            self._agent_frame_pump.select_fixed_camera(self._agent_camera_ref(name))
+        return self.agent_cameras_payload()
+
+    def agent_frame_jpeg(self) -> bytes:
+        pump = self._ensure_agent_frame_pump()
+        if pump is None:
+            raise RuntimeError("No authored MuJoCo cameras are available.")
+        return pump.get_jpeg()
+
+    def _ensure_agent_frame_pump(self) -> MujocoFramePump | None:
+        if self.agent_camera_name is None:
+            return None
+        with self._agent_pump_lock:
+            if self._agent_frame_pump is None:
+                self._agent_frame_pump = MujocoFramePump(
+                    self.mujoco,
+                    self.model,
+                    self.data,
+                    width=self._agent_width,
+                    height=self._agent_height,
+                    camera=self._agent_camera_ref(self.agent_camera_name),
+                    camera_state=CameraState(interactive=False),
+                    image_module=self.Image,
+                    fps=self._agent_fps,
+                    render_mode="mujoco",
+                    scene_lock=self._lock,
+                )
+            return self._agent_frame_pump
+
     def close(self) -> None:
         if self._frame_pump is not None:
             self._frame_pump.close()
+        if self._agent_frame_pump is not None:
+            self._agent_frame_pump.close()
+
+    def _initial_agent_camera(self, requested: str | int | None) -> str | None:
+        if not self.agent_camera_names:
+            return None
+        if isinstance(requested, int) or (isinstance(requested, str) and requested.isdigit()):
+            index = int(requested)
+            if 0 <= index < len(self.agent_camera_names):
+                return self.agent_camera_names[index]
+        if isinstance(requested, str) and requested in self.agent_camera_names:
+            return requested
+        return self.agent_camera_names[0]
+
+    def _agent_camera_ref(self, name: str) -> str | int:
+        camera_id = self.mujoco.mj_name2id(
+            self.model,
+            self.mujoco.mjtObj.mjOBJ_CAMERA,
+            name,
+        )
+        return name if camera_id >= 0 else self.agent_camera_names.index(name)
 
     def _tracking_body_id(self) -> int:
         return tracking_body_id(self.mujoco, self.model, self.data)
@@ -457,6 +559,20 @@ def serve_model_view(
                     self.send_error(HTTPStatus.NOT_FOUND, "Frame streaming disabled")
                 else:
                     self._send_bytes(session.frame_jpeg(), "image/jpeg")
+            elif parsed.path == "/agent-frame.jpg":
+                try:
+                    self._send_bytes(session.agent_frame_jpeg(), "image/jpeg")
+                except RuntimeError as exc:
+                    self.send_error(HTTPStatus.NOT_FOUND, str(exc))
+            elif parsed.path == "/agent-cameras.json":
+                self._send_json(session.agent_cameras_payload())
+            elif parsed.path == "/agent-camera":
+                query = parse_qs(parsed.query)
+                name = query.get("name", [""])[0]
+                try:
+                    self._send_json(session.select_agent_camera(name))
+                except (RuntimeError, ValueError) as exc:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             elif parsed.path == "/scene.json":
                 self._send_json(session.scene_payload(), compress=True)
             elif parsed.path == "/joints.json":
@@ -539,6 +655,7 @@ def _threejs_html() -> str:
   <title>SimRig Model View</title>
   <style>"""
         + viewer_styles(sidebar_width=360)
+        + agent_camera_styles()
         + """
     #three-view { width: 100%; height: 100%; display: block; outline: none; }
     #loading { position: absolute; inset: 0; display: grid; place-items: center; color: #cbd5e1; background: #070b12; z-index: 2; }
@@ -557,6 +674,9 @@ def _threejs_html() -> str:
       <canvas id="three-view" aria-label="Interactive SimRig model"></canvas>
       <div id="loading">Loading WebGL scene…</div>
       <div id="hint">Drag to orbit · scroll to zoom · right-drag to pan</div>
+"""
+        + agent_camera_panel()
+        + """
     </div>
   </main>
   <aside>
@@ -581,6 +701,9 @@ def _threejs_html() -> str:
     const objects = new Map();
     const meshGeometries = new Map();
     let controlsRendered = false;
+"""
+        + agent_camera_script()
+        + """
 
     const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: false});
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -625,6 +748,9 @@ def _threejs_html() -> str:
 
     const modelRoot = new THREE.Group();
     scene.add(modelRoot);
+"""
+        + threejs_agent_camera_script()
+        + """
 
     function materialFor(geom) {
       const [r, g, b, a] = geom.rgba;
@@ -727,6 +853,7 @@ def _threejs_html() -> str:
     function animate() {
       orbit.update();
       renderer.render(scene, camera);
+      renderAgentCameraEmulation();
       requestAnimationFrame(animate);
     }
 
@@ -734,6 +861,7 @@ def _threejs_html() -> str:
       const res = await fetch('/scene.json', {cache: 'no-store'});
       if (!res.ok) throw new Error(`scene request failed (${res.status})`);
       const payload = await res.json();
+      updateAuthoredCameras(payload.authored_cameras);
 
       for (const mesh of payload.meshes) {
         const geometry = new THREE.BufferGeometry();
@@ -775,12 +903,14 @@ def _threejs_html() -> str:
     function statusPayload(payload) {
       const copy = {...payload};
       delete copy.transforms;
+      delete copy.authored_cameras;
       return copy;
     }
 
     function renderControls(payload) {
       metaEl.textContent = `${payload.model_name} | ${payload.joint_count} joints | ${payload.control_count} controls | mode: ${payload.render_mode} | fps: display`;
       updateTransforms(payload.transforms);
+      updateAuthoredCameras(payload.authored_cameras);
       if (!controlsRendered) {
         controlsEl.innerHTML = '';
         for (const control of payload.controls) {
@@ -836,7 +966,7 @@ def _threejs_html() -> str:
     resize();
     animate();
     try {
-      await Promise.all([loadScene(), loadJoints()]);
+      await Promise.all([loadScene(), loadJoints(), initializeAgentCamera()]);
       setInterval(loadJoints, 2000);
     } catch (err) {
       loadingEl.className = 'error';

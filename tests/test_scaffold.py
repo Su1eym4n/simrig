@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from simrig.scaffold import REQUIRED_SECTION_MARKERS, new_env
-from simrig.validate_env import validate_env
+from simrig.validate_env import _vision_runtime_checks, validate_env
 
 
 class ScaffoldTests(unittest.TestCase):
@@ -61,6 +61,104 @@ class ValidateEnvTests(unittest.TestCase):
             self.assertFalse(result.passed)
             self.assertTrue(any("section marker missing" in item for item in result.missing))
             self.assertTrue(any("CustomEnv method missing: reset" in item for item in result.missing))
+
+    def test_reference_vision_env_passes_static_vision_validation(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "examples" / "vision_cartpole.py"
+
+        result = validate_env(path, vision=True)
+
+        self.assertTrue(result.passed, result.missing)
+        self.assertEqual(result.network_type, "vision_cnn")
+        self.assertEqual(result.vision["declared"]["pixel_keys"], ["pixels/view_0"])
+
+    def test_vision_runtime_checks_shapes_ranges_keys_and_camera(self) -> None:
+        import numpy as np
+
+        class Model:
+            def camera(self, name):
+                if name != "fixed":
+                    raise KeyError(name)
+                return object()
+
+        class Env:
+            mj_model = Model()
+
+        obs = {
+            "pixels/view_0": np.zeros((8, 8, 3), dtype=np.float32),
+            "state": np.zeros((1,), dtype=np.float32),
+            "privileged_state": np.zeros((4,), dtype=np.float32),
+        }
+        next_obs = dict(obs)
+        next_obs["pixels/view_0"] = np.ones((8, 8, 3), dtype=np.float32) * 0.25
+        metadata = {
+            "network_spec": {
+                "factory": {
+                    "policy_obs_key": "state",
+                    "value_obs_key": "privileged_state",
+                }
+            },
+            "vision_spec": {
+                "pixel_keys": ["pixels/view_0"],
+                "camera_names": ["fixed"],
+                "resolution": [8, 8],
+                "frame_stack": 3,
+                "channels_per_frame": 1,
+                "value_range": [-0.5, 0.5],
+            },
+        }
+
+        missing, warnings, details = _vision_runtime_checks(
+            Env(),
+            obs,
+            next_obs,
+            {key: value.shape for key, value in obs.items()},
+            require_vision=True,
+            metadata=metadata,
+        )
+
+        self.assertEqual(missing, [])
+        self.assertEqual(warnings, [])
+        self.assertTrue(details["frames"]["pixels/view_0"]["changed_after_step"])
+
+    def test_vision_runtime_accepts_singleton_warp_renderer_axis(self) -> None:
+        import numpy as np
+
+        class Env:
+            mj_model = None
+
+        obs = {
+            "pixels/view_0": np.zeros((1, 8, 8, 3), dtype=np.float32),
+            "state": np.zeros((1,), dtype=np.float32),
+            "privileged_state": np.zeros((4,), dtype=np.float32),
+        }
+        next_obs = dict(obs)
+        next_obs["pixels/view_0"] = np.ones((1, 8, 8, 3), dtype=np.float32)
+        metadata = {
+            "network_spec": {"factory": {}},
+            "vision_spec": {
+                "pixel_keys": ["pixels/view_0"],
+                "resolution": [8, 8],
+                "frame_stack": 3,
+                "channels_per_frame": 1,
+                "value_range": [0.0, 1.0],
+            },
+        }
+
+        missing, warnings, details = _vision_runtime_checks(
+            Env(),
+            obs,
+            next_obs,
+            {"pixels/view_0": (8, 8, 3)},
+            require_vision=True,
+            metadata=metadata,
+        )
+
+        self.assertEqual(missing, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            details["frames"]["pixels/view_0"]["logical_shape"],
+            [8, 8, 3],
+        )
 
 
 if __name__ == "__main__":

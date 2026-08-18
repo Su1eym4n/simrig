@@ -106,8 +106,11 @@ class CliTests(unittest.TestCase):
 
     def test_cli_validate_env_runtime_flag_parses(self) -> None:
         parser = build_parser()
-        args = parser.parse_args(["validate-env", "envs/reach.py", "--runtime"])
+        args = parser.parse_args(
+            ["validate-env", "envs/reach.py", "--runtime", "--vision"]
+        )
         self.assertTrue(args.runtime)
+        self.assertTrue(args.vision)
         self.assertEqual(args.path, Path("envs/reach.py"))
 
     def test_demo_command_parses_policy_env_and_command(self) -> None:
@@ -296,6 +299,24 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(args.python_command, "/usr/bin/python3.12")
+
+    def test_preview_accepts_episode_auto_reset_options(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            [
+                "preview",
+                "runs/example/policy.params",
+                "--env",
+                "ExampleEnv",
+                "--auto-reset",
+                "--auto-reset-delay",
+                "2.5",
+            ]
+        )
+
+        self.assertTrue(args.auto_reset)
+        self.assertEqual(args.auto_reset_delay, 2.5)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from simrig.playground_backend import (
     _apply_command,
     _copy_mocap_state,
+    _training_env_overrides,
     inspect_env,
     list_envs,
     resolve_training_config,
@@ -66,6 +67,45 @@ class PlaygroundBackendTests(unittest.TestCase):
         self.assertEqual(config["seed"], 3)
         self.assertEqual(config["ppo_config_source"], "simrig-generic-custom-env")
         self.assertEqual(config["network_factory"]["policy_hidden_layer_sizes"], (64, 64))
+
+    def test_custom_vision_env_uses_declared_cnn_and_renderer_world_count(self) -> None:
+        source = '''\
+def default_config():
+    return {"impl": "warp", "vision": True}
+
+def network_spec():
+    return {"type": "vision_cnn", "factory": {"policy_obs_key": "state"}}
+
+def vision_spec():
+    return {"requires_impl": "warp", "nworld_config_key": "vision.nworld"}
+
+def training_config():
+    return {"num_timesteps": 5000000, "num_envs": 1024, "num_eval_envs": 32,
+            "batch_size": 256, "vision": True, "augment_pixels": True}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision_env.py"
+            path.write_text(source, encoding="utf-8")
+            with patch("simrig.playground_backend._warp_available", return_value=True):
+                config = resolve_training_config(
+                    str(path), preset_name="smoke", impl="auto", seed=4
+                )
+
+        self.assertEqual(config["network_type"], "vision_cnn")
+        self.assertEqual(config["network_factory"]["policy_obs_key"], "state")
+        self.assertTrue(config["vision"])
+        self.assertTrue(config["augment_pixels"])
+        self.assertFalse(config["normalize_observations"])
+        self.assertEqual(config["ppo_config_source"], "custom-env:training_config")
+        self.assertEqual(config["num_envs"], 16)
+        self.assertEqual(
+            _training_env_overrides(config, evaluation=False),
+            {"impl": "warp", "vision.nworld": 16},
+        )
+        self.assertEqual(
+            _training_env_overrides(config, evaluation=True),
+            {"impl": "warp", "vision.nworld": 1},
+        )
 
     def test_auto_falls_back_to_jax_when_upstream_warp_has_no_gpu(self) -> None:
         registry = MagicMock()

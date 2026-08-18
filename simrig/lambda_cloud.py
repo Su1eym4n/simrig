@@ -16,12 +16,28 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tomllib
 from typing import Sequence
 
 from simrig.io import slugify, timestamp
 
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+
+def _pinned_jax_version(project: Path) -> str:
+    """Return the exact JAX version required by the synced SimRig checkout."""
+    metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    project_metadata = metadata.get("project", {})
+    dependencies = list(project_metadata.get("dependencies", []))
+    optional_dependencies = project_metadata.get("optional-dependencies", {})
+    for group in optional_dependencies.values():
+        dependencies.extend(group)
+    for dependency in dependencies:
+        match = re.fullmatch(r"jax\s*==\s*([A-Za-z0-9._+-]+)", dependency)
+        if match:
+            return match.group(1)
+    raise ValueError("SimRig pyproject.toml must pin JAX with an exact jax==VERSION dependency")
 
 
 @dataclass(frozen=True)
@@ -189,8 +205,10 @@ def prepare_lambda(
         [python_command, "-c", python_check],
         venv,
         [".venv/bin/python", "-m", "pip", "install", "--upgrade", "pip"],
+        [".venv/bin/python", "-m", "pip", "install", "-e", ".[playground]"],
     ]
     if jax_cuda != "preinstalled":
+        jax_version = _pinned_jax_version(project)
         setup_commands.append(
             [
                 ".venv/bin/python",
@@ -198,12 +216,11 @@ def prepare_lambda(
                 "pip",
                 "install",
                 "--upgrade",
-                f"jax[{jax_cuda}]",
+                f"jax[{jax_cuda}]=={jax_version}",
             ]
         )
     setup_commands.extend(
         [
-            [".venv/bin/python", "-m", "pip", "install", "-e", ".[playground]"],
             ["nvidia-smi", "-L"],
             [".venv/bin/python", "-c", gpu_check],
         ]

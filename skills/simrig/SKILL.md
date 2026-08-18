@@ -68,7 +68,11 @@ Three.js/WebGL scene with browser-local orbit, zoom, and pan controls. It loads
 pinned Three.js modules from jsDelivr. Use `--render-mode mujoco` for the local
 streamed renderer or `--render-mode topdown` for the schematic fallback. When
 the MJCF contains keyframes, the viewer starts from the first one and Reset
-Joints restores it.
+Joints restores it. When the MJCF contains named cameras, the Three.js page
+adds a selectable Robot View inset. Emulated mode uses the camera's compiled
+live pose and vertical FOV in the Three.js scene; Sensor mode shows the native
+MuJoCo offscreen render. Use `--camera NAME` to choose the initial camera. Treat
+the emulation as a human-facing aid, never as evidence of exact policy pixels.
 
 For an ordinary Python controller that already owns its `MjModel`, `MjData`,
 controls, and stepping, use `simrig.LiveWebViewer` inside that script. Share
@@ -150,6 +154,24 @@ Treat static validation as a structure check only. Treat runtime validation as
 one reset/step compatibility check. Treat smoke training as pipeline evidence,
 not proof that the behavior is learned.
 
+For a pixel-observation environment, require literal `NETWORK_SPEC`,
+`VISION_SPEC`, and `DEFAULT_CONFIG` mappings for import-free static checks.
+Runtime `network_spec()` and `vision_spec()` hooks may enrich those declarations
+after the training dependencies are available. Then add the vision gate:
+
+```bash
+simrig validate-env envs/TASK_NAME.py --vision
+simrig validate-env envs/TASK_NAME.py --runtime --vision
+simrig smoke envs/TASK_NAME.py --steps 5
+simrig train envs/TASK_NAME.py --preset smoke
+```
+
+`--vision` checks the CNN type, declared pixel/camera contract, runtime HWC
+shapes, numeric and finite values, declared range and resolution, frame change,
+and actor/critic observation keys. MJX camera rendering currently requires a
+JAX-visible CUDA GPU with MuJoCo Warp. A CPU-only metadata pass is not evidence
+that rendered PPO can run.
+
 Inspect state dimensions, finite values, action scaling, reward components,
 termination frequency, contacts, and reset diversity before spending on a
 longer run.
@@ -196,15 +218,27 @@ Then preview the same checkpoint and environment:
 simrig preview runs/RUN/policy.params --env ENV_OR_PATH --port 8765
 ```
 
+Use `--auto-reset` to begin a new episode after termination while preserving
+the terminal pose briefly; adjust that pause with `--auto-reset-delay`.
+
 Use `--command X Y YAW` with `eval` and `preview` only for environments that
 expose command-like state. Repeat headless evaluation with distinct `--seed`
 values when the task contract requires multiple trials. Open
 `http://127.0.0.1:8765/`. Preview defaults to a Three.js/WebGL scene driven by
-live geom transforms from a server-side rollout clock, so browser-local orbit,
-zoom, and pan do not interrupt policy stepping. Use `--render-mode mujoco` for
-the local streamed renderer or `--render-mode topdown` for the schematic
-fallback. Prefer `preview` for agent-visible review; use `demo` only when the
-user explicitly wants the native desktop viewer.
+live geom and authored-camera transforms from a server-side rollout clock, so
+browser-local orbit, zoom, and pan do not interrupt policy stepping. Named
+MuJoCo cameras appear in a Robot View inset while the human orbit camera remains
+independent. Emulated mode shares the Three.js design; Sensor mode is the native
+MuJoCo comparison. Actual policy observations remain environment-defined.
+The preview reports episode number and survival length, and distinguishes
+simulator physics, policy-observation, Sensor-display, and browser-playback
+rates. Command controls appear only for environments that expose commands;
+custom environments may name arbitrary command fields with an instance
+`command_spec()` method.
+Use `--render-mode mujoco` for the local full-page stream or
+`--render-mode topdown` for the schematic fallback. Prefer `preview` for
+agent-visible review; use `demo` only when the user explicitly wants the native
+desktop viewer.
 
 Evaluate across multiple seeds and the scenarios from the task contract.
 Compare success rate and task-specific metrics, not just total reward. Read

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Require Python 3.11+, test the supported boundary in CI, and make static
+  vision validation parse literal metadata without importing JAX or Playground.
+- Publish a five-seed-tested, 1,000-step vision CartPole reference checkpoint
+  and download its sibling `config.json` with `hf://` policies so vision CNNs
+  reconstruct from Hub artifacts without manual metadata setup.
+- Make policy previews task-aware: hide unsupported command controls, accept
+  environment-defined command fields, expose episode state and survival, add
+  optional automatic reset, and label physics, policy-observation, sensor, and
+  browser display rates separately.
+- Keep Three.js previews headless-safe by lazily starting the optional native
+  Sensor renderer and selecting EGL before MuJoCo import on display-less Linux.
+- Pin the tested Warp 1.13 runtime and bridge MuJoCo 3.10's stale internal
+  `GraphMode` import so CUDA vision environments can construct and step. The
+  vision reference also normalizes Warp's unbatched singleton renderer axis so
+  checkpoint evaluation receives logical HWC pixels.
+- Show live, selectable named cameras inside Three.js model and policy previews:
+  an authored-pose/FOV Three.js emulation by default, plus a native MuJoCo
+  sensor comparison, while preserving the independent human orbit camera.
+- Add declarative custom-env vision CNN selection across train/eval/demo/preview,
+  rendered-frame validation with CUDA/Warp capability reporting, and a complete
+  MJX-rendered cartpole vision PPO reference.
 - Resolve registered MuJoCo Playground training from each task's tuned Brax PPO
   and network configuration while preserving SimRig's bounded smoke/local gates.
 - Add `--impl auto|jax|warp`, GPU-aware Warp fallback, reproducible `--seed`,

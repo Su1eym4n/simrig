@@ -7,7 +7,7 @@ name = "simrig"
 dynamic = ["version"]
 description = "Agent- and human-friendly workflows for MuJoCo Playground training and evaluation."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "SimRig contributors" }]
@@ -29,7 +29,7 @@ playground = [
   "jax==0.10.2",
   "brax==0.14.2",
   "playground==0.2.0",
-  "warp-lang==1.15.0",
+  "warp-lang==1.13.0",
 ]
 dev = ["build", "numpy", "pytest", "twine"]
 

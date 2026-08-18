@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from simrig.presets import apply_preset_scale, resolve_network_factory, resolve_small_network
+from simrig.presets import (
+    apply_preset_scale,
+    resolve_network_factory,
+    resolve_network_type,
+    resolve_small_network,
+)
 
 
 class PresetTests(unittest.TestCase):
@@ -63,6 +68,19 @@ class PresetTests(unittest.TestCase):
             checkpoint.write_text("params\n", encoding="utf-8")
 
             self.assertFalse(resolve_small_network(checkpoint))
+
+    def test_resolve_network_type_reads_vision_and_defaults_legacy_to_mlp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            checkpoint = run_dir / "policy.params"
+            checkpoint.write_text("params\n", encoding="utf-8")
+
+            self.assertEqual(resolve_network_type(checkpoint), "mlp")
+            (run_dir / "config.json").write_text(
+                json.dumps({"config": {"network_type": "vision_cnn"}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(resolve_network_type(checkpoint), "vision_cnn")
 
 
 if __name__ == "__main__":
