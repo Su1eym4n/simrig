@@ -43,7 +43,10 @@ class LambdaCloudTests(unittest.TestCase):
     def test_prepare_syncs_checkout_then_installs_and_checks_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+            (project / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["jax==0.10.2"]\n',
+                encoding="utf-8",
+            )
             (project / "simrig").mkdir()
             completed = subprocess.CompletedProcess([], 0)
             with (
@@ -72,7 +75,10 @@ class LambdaCloudTests(unittest.TestCase):
     def test_prepare_can_install_a_pip_cuda_jax_wheel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
-            (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+            (project / "pyproject.toml").write_text(
+                '[project]\ndependencies = ["jax==0.10.2"]\n',
+                encoding="utf-8",
+            )
             (project / "simrig").mkdir()
             completed = subprocess.CompletedProcess([], 0)
             with (
@@ -87,7 +93,8 @@ class LambdaCloudTests(unittest.TestCase):
 
         setup = run.call_args_list[2].args[0][-1]
         self.assertNotIn("--system-site-packages", setup)
-        self.assertIn("jax[cuda12]", setup)
+        self.assertIn("jax[cuda12]==0.10.2", setup)
+        self.assertLess(setup.index(".[playground]"), setup.index("jax[cuda12]==0.10.2"))
 
     def test_prepare_accepts_explicit_remote_python(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
