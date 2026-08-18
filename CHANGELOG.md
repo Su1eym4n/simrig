@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-17
+
 - Require Python 3.11+, test the supported boundary in CI, and make static
   vision validation parse literal metadata without importing JAX or Playground.
 - Publish a five-seed-tested, 1,000-step vision CartPole reference checkpoint
