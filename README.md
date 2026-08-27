@@ -206,7 +206,8 @@ simrig rank-checkpoints reports/checkpoint-*.json
 Missing fixed-seed coverage fails promotion, as does high training reward
 without independently verified success. `simrig eval-checkpoints` provides a
 bounded one-shot check of available run checkpoints; it does not start a
-persistent monitor. See [Independent evaluation](docs/independent-evaluation.md)
+persistent monitor. See the evaluator protocol in
+[evaluation-and-operations.md](skills/simrig/references/evaluation-and-operations.md)
 and the [planar-arm acceptance example](examples/phase1/README.md).
 
 Older contracts migrate explicitly to a reviewable draft, and compatibility is

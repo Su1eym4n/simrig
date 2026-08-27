@@ -54,8 +54,8 @@ simrig rank-checkpoints reports/checkpoint-*.json
 Do not promote a capped matrix. `simrig eval-checkpoints RUN` is a bounded
 one-shot diagnostic for checkpoints available during a run; required missing
 coverage remains a gate failure. See
-[Independent evaluation](independent-evaluation.md) for the plugin and event
-schemas.
+[evaluation-and-operations.md](../skills/simrig/references/evaluation-and-operations.md)
+for the plugin and event schemas.
 
 Do not put project-specific physics or semantics into SimRig's gate engine.
 Expose those outcomes as stable evaluator metrics, then declare task-agnostic

@@ -140,47 +140,132 @@ simrig reward-audit reports/*.json
 
 The gate engine is task-agnostic. Task-specific evaluators expose stable
 metrics; the contract supplies grouping, aggregation, operators, and thresholds.
+`simrig gate` and `simrig reward-audit` score already-written JSON reports.
+`simrig eval-suite` runs a contract-declared plugin over the scenario/seed
+matrix and then applies the same independent predicates.
 
 ### Independent evaluator plugins
 
-A task-contract v2 evaluator is a Python file declaring `EVALUATOR_SPEC` with a
-name, semantic version, and protocol version 1, plus `evaluate(request)`. The
-request names the checkpoint, backend/environment, suite, scenario parameters,
-fixed seed, horizon, contract hash, and evaluator config. The result contains
-compact metrics and an event stream; SimRig applies contract predicates to
-derive `task_success` and the terminal reason. Never derive either from reward.
+A task-contract v2 evaluator is a trusted local Python file. It declares
+`EVALUATOR_SPEC` (name, semantic version, protocol version 1) and
+`evaluate(request)`. It owns simulator construction and checkpoint loading.
+It must not decide promotion from training reward.
 
-Events use `kind`, `name`, `step`, and `active`. Contacts add `body_a`, `body_b`,
-and optional `force`. Generic predicates support sustained signals, forbidden
-contacts, event counts and sequences, and numeric task-owned metrics. Stable
-terminal categories include success, timeout, forbidden contact, safety or
-invalid-state failures, ordinary task failure, incomplete execution, evaluator
-error, and unknown outcome.
+```python
+EVALUATOR_SPEC = {
+    "name": "my-task-evaluator",
+    "version": "1.0.0",
+    "protocol_version": 1,
+}
 
-Run a complete matrix with:
+
+def evaluate(request):
+    return {
+        "total_reward": 12.5,
+        "metrics": {"final_error": 0.01},
+        "events": [
+            {"kind": "signal", "name": "at_goal", "step": 30, "active": True}
+        ],
+    }
+```
+
+The request is a mapping with `checkpoint`, `environment`, `backend`, `suite`,
+`scenario`, `parameters`, `seed`, `max_steps`, `task_contract_sha256`, and
+`evaluator_config`. Return compact metrics plus the event/contact stream that
+contract predicates need. Large observations, videos, or dense traces belong in
+sidecar assets with compact references in the record.
+
+Events use `kind`, `name`, `step`, and `active`. Contacts add `body_a`,
+`body_b`, and optional `force`. Generic predicates:
+
+| Type | Role |
+|---|---|
+| `sustained` | named signal held for consecutive steps |
+| `forbidden_contact` | bound contacts on an unordered body pair |
+| `event_count` | bound the number of named events |
+| `sequence` | ordered event subsequence |
+| `metric` | numeric task-owned metric vs a threshold |
+
+SimRig derives `task_success` and a terminal reason from those predicates.
+Never derive either from reward. Terminal reasons have `category`, `code`,
+`message`, and optional `details`. Categories, highest precedence first:
+
+`evaluator_error`, `invalid_state`, `forbidden_contact`, `safety_violation`,
+`timeout`, `task_failure`, `incomplete`, `unknown`, `success`.
+
+A higher-priority failure must not be hidden by a simultaneous target hit or
+large reward. Test this ordering with multi-failure counterexamples.
+
+SimRig hashes the evaluator declaration, config, and a bounded local source
+closure (portable paths only). That identity is embedded in suite reports and
+run manifests. Reports from different evaluator implementations cannot be
+ranked together.
+
+Run the complete matrix:
 
 ```bash
 simrig eval-suite POLICY --contract task.frozen.json --suite promotion
 ```
 
-Missing scenario/seed coverage always fails. Use `simrig eval-checkpoints RUN`
-only for a bounded one-shot diagnostic while checkpoints are being produced.
-Evaluator identity includes its version, config, and bounded source closure and
-is recorded in suite reports and run manifests.
+Missing scenario/seed coverage always fails. Caps are diagnostics only; a
+capped report stays failed when required promotion cells are missing:
 
-Inspect terminal results using an explicit precedence. Evaluator errors and
-invalid states outrank safety/forbidden-contact failures, which outrank ordinary
-task failure, incomplete execution, and timeout. A higher-priority failure must
-not be hidden by a simultaneous target hit or large reward. Test this ordering
-with multi-failure counterexamples.
+```bash
+simrig eval-suite POLICY --contract task.frozen.json --suite promotion \
+  --max-scenarios 1 --max-seeds-per-scenario 1
+simrig eval-checkpoints RUN --contract task.frozen.json \
+  --suite promotion --max-checkpoints 1
+```
 
-Use `simrig reward-probe REPORTS...` to surface concrete high-reward failures.
-Use `simrig rank-checkpoints REPORTS...` only for reports sharing the same
-contract, evaluator, and suite hashes. Ranking uses promotion, worst-condition
-and overall independent success, and safety failures; it excludes reward.
+`eval-checkpoints` is a one-shot look at checkpoints already in a run
+directory. It does not start a monitor. Appended report paths are diagnostic
+unless the full matrix passes.
 
-See the repository's `docs/independent-evaluation.md` for the complete protocol,
-contract compatibility policies, and current limitations.
+```bash
+simrig reward-probe reports/*.json
+simrig rank-checkpoints reports/checkpoint-*.json
+```
+
+`reward-probe` lists failed scenario/seed cells whose reward reaches the
+successful range. Rank only reports that share contract hash, evaluator hash,
+and suite. Ranking is lexicographic over promotion pass, worst-condition
+success rate, overall success rate, then lower safety-failure rate. Reward is
+excluded.
+
+The analytic planar-arm example in
+[examples/phase1](../../../examples/phase1/README.md) tests this architecture,
+not a training backend. Its valid controller passes; a high-reward trap fails
+forbidden-contact predicates and ranks last.
+
+Evaluator plugins are not sandboxed. SimRig does not yet provide backend
+adapters, distributed evaluator workers, a columnar event store, or a
+persistent asynchronous checkpoint watcher. Source closure and
+checkpoint-directory hashing are intentionally bounded.
+
+### Contract migration and compatibility
+
+Migration always writes an editable draft. Review and freeze it; do not
+silently rewrite a frozen artifact:
+
+```bash
+simrig task migrate task-v1.json --output task-v2.json
+simrig task validate task-v2.json
+simrig task freeze task-v2.json --output task-v2.frozen.json
+```
+
+| Policy | Frozen fields |
+|---|---|
+| `exact` | entire contract semantics |
+| `training_resume` | environment, behavior, interfaces, scene, reset, episode, outcomes |
+| `checkpoint_evaluation` | environment, interfaces, scene, episode |
+| `result_comparison` | environment, behavior, interfaces, scene, reset, episode, outcomes |
+
+`training_resume` may change evaluation and compute budgets. Result comparison
+still requires matching suite/evaluator hashes before reports can be ranked.
+
+```bash
+simrig task compatibility OLD NEW --policy training_resume
+```
 
 Preview the exact evaluated pair:
 
