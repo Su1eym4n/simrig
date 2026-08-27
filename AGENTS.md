@@ -42,5 +42,3 @@ reset/step correctly.
 - Run smoke tests before long training runs.
 - Use `smoke` preset before `local` or `large`.
 - `--preset large` is PPO scale. `simrig remote` is SSH to another Linux GPU.
-- Do not copy Cortex, AXIS, Daionics, or project-specific research logic into
-  generic SimRig code.
