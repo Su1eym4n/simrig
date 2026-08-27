@@ -1,0 +1,132 @@
+{
+  "behavior": {
+    "objective": "Move a two-link planar arm to nominal and boundary targets and hold within tolerance."
+  },
+  "compute": {
+    "abort_rules": [],
+    "gpu_hourly_cost": null,
+    "max_gpu_hours": null,
+    "max_timesteps": 4096,
+    "max_wall_time_sec": 30
+  },
+  "environment": {
+    "backend": "analytic",
+    "ref": "planar-reach-acceptance"
+  },
+  "episode": {
+    "horizon_steps": 40
+  },
+  "evaluation": {
+    "evaluator": {
+      "config": {},
+      "plugin": "planar_reach_evaluator.py"
+    },
+    "predicates": [
+      {
+        "event": "target_within_tolerance",
+        "failure_category": "task_failure",
+        "failure_code": "target_hold_not_met",
+        "hold_steps": 10,
+        "id": "sustained_target_hold",
+        "type": "sustained"
+      },
+      {
+        "body_a": "end_effector",
+        "body_b": "forbidden_zone",
+        "failure_category": "forbidden_contact",
+        "failure_code": "end_effector_entered_forbidden_zone",
+        "id": "no_forbidden_contact",
+        "max_count": 0,
+        "type": "forbidden_contact"
+      }
+    ],
+    "suites": {
+      "promotion": {
+        "group_by": [
+          "scenario"
+        ],
+        "requirements": [
+          {
+            "aggregate": "rate",
+            "metric": "task_success",
+            "operator": ">=",
+            "value": 1.0
+          },
+          {
+            "aggregate": "max",
+            "metric": "forbidden_contact_count",
+            "operator": "<=",
+            "value": 0
+          }
+        ],
+        "scenarios": [
+          {
+            "name": "nominal",
+            "parameters": {
+              "target": [
+                0.7,
+                0.25
+              ],
+              "tolerance": 0.025
+            },
+            "seeds": [
+              0,
+              1,
+              2
+            ]
+          },
+          {
+            "name": "boundary",
+            "parameters": {
+              "target": [
+                1.02,
+                0.05
+              ],
+              "tolerance": 0.025
+            },
+            "seeds": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "interfaces": {
+    "actions": "Controller-owned planar joint targets; evaluator consumes only the controller artifact.",
+    "observations": "Planar joint state and Cartesian target; no privileged success signal."
+  },
+  "kind": "simrig.task-contract",
+  "name": "planar-reach-phase1-acceptance",
+  "outcomes": {
+    "failure": "Failure to sustain target tolerance, forbidden-zone contact, timeout, invalid state, or evaluator error.",
+    "failure_taxonomy": [
+      "evaluator_error",
+      "forbidden_contact",
+      "incomplete",
+      "invalid_state",
+      "safety_violation",
+      "success",
+      "task_failure",
+      "timeout",
+      "unknown"
+    ],
+    "success": "Target error remains at or below 0.025 m for at least 10 consecutive steps without forbidden contact."
+  },
+  "reset": {
+    "native": "Same analytic joint-state distribution; the example has no predecessor skill.",
+    "training": "Deterministic seed-conditioned perturbations around a safe initial joint pose."
+  },
+  "scene": {
+    "allowed_contacts": [],
+    "assumptions": [
+      "Two rigid planar links of lengths 0.6 m and 0.45 m."
+    ],
+    "forbidden_contacts": [
+      "end_effector with forbidden_zone"
+    ]
+  },
+  "schema_version": 2
+}

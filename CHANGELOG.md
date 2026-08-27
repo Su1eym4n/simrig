@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- Add versioned task contracts with `simrig task init`, `validate`, `freeze`,
+  and semantic `diff`. Frozen contracts use canonical content hashes and can
+  enforce resolved timestep, wall-time, GPU-hour, and metric abort budgets.
+- Add task-agnostic `simrig gate` promotion suites over independent JSON
+  evaluation reports, including required seed/scenario coverage and grouped
+  metric requirements.
+- Add `simrig reward-audit` to flag obvious disagreement between reward and
+  independently recorded task success.
+- Write v2 `run_manifest.json` lifecycle records with contract identity,
+  checkpoint lineage, bounded local source/XML/asset closure hashes, richer Git
+  state, actual progress, GPU-hours, optional cost, and failure status.
+- Rename SSH training from `simrig cloud lambda` to `simrig remote`. The host
+  is any already-running Linux GPU over SSH, not a Lambda-only path. SimRig
+  still does not provision or stop machines.
+- Rename the large PPO preset from `cloud` to `large`. `--preset large` is
+  scale, not a remote launcher. `--preset cloud` remains a hidden alias, and
+  old run `config.json` files that recorded `"preset": "cloud"` still load.
+- Write `metrics.jsonl` and `progress.json` during PPO, and add `simrig status`
+  plus richer `simrig remote status` (step count, eval reward, ETA).
+- Add `simrig train --resume` / `simrig remote train --resume` to restore Brax
+  Orbax checkpoints.
+- Report `task_success` from `state.metrics["success"]` or `SUCCESS_SPEC`
+  instead of always leaving it unknown.
+- Add a backend-neutral evaluator plugin protocol and `simrig eval-suite` for
+  frozen scenario-by-seed matrices, with evaluator/source hashes in reports and
+  run manifests.
+- Add generic event, sustained-signal, metric, sequence, and contact predicates
+  with a stable machine-readable terminal failure taxonomy.
+- Add per-condition promotion reports, coverage-failing bounded checkpoint
+  evaluation, reward adversarial probes, and reward-independent checkpoint
+  ranking.
+- Add explicit task-contract schema migration and purpose-specific exact,
+  training-resume, checkpoint-evaluation, and result-comparison policies.
+- Add a dependency-free planar-arm acceptance example containing fixed nominal
+  and boundary cases plus an intentionally high-reward physical failure.
+- Strengthen the SimRig agent skill with a mandatory, user-confirmed Physical
+  Success Definition gate before reward, termination, environment authoring, or
+  training, including feasibility checks, counterexamples, controls, and
+  independent Phase 1 promotion evidence.
+
 ## 0.4.0 - 2026-08-17
 
 - Require Python 3.11+, test the supported boundary in CI, and make static

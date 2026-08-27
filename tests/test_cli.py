@@ -39,6 +39,151 @@ class CliTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "reports").is_dir())
             self.assertIn("runs", stdout)
 
+    def test_task_contract_cli_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            draft = Path(tmp) / "task.json"
+            frozen = Path(tmp) / "task.frozen.json"
+            code, _, _ = _run_cli(
+                ["task", "init", "RobotTask", "--output", str(draft)]
+            )
+            self.assertEqual(code, 0)
+
+            code, stdout, _ = _run_cli(["task", "validate", str(draft), "--json"])
+            self.assertEqual(code, 1)
+            self.assertFalse(json.loads(stdout)["passed"])
+
+            payload = json.loads(draft.read_text(encoding="utf-8"))
+            payload["behavior"]["objective"] = "Track a command."
+            payload["interfaces"]["actions"] = "Normalized actuator commands."
+            payload["interfaces"]["observations"] = "Deployable proprioception and command."
+            payload["reset"]["training"] = "Nominal state with sampled commands."
+            payload["reset"]["native"] = "Same as training; no predecessor."
+            payload["episode"]["horizon_steps"] = 100
+            payload["outcomes"]["success"] = "Tracking error below threshold."
+            payload["outcomes"]["failure"] = "Fall, non-finite state, or timeout."
+            draft.write_text(json.dumps(payload), encoding="utf-8")
+
+            code, _, _ = _run_cli(
+                ["task", "freeze", str(draft), "--output", str(frozen)]
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(frozen.is_file())
+
+            code, stdout, _ = _run_cli(["task", "validate", str(frozen), "--json"])
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(stdout)["frozen"])
+
+    def test_task_contract_cli_migration_and_compatibility(self) -> None:
+        from simrig.task_contract import task_contract_template
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = task_contract_template("RobotTask")
+            old["schema_version"] = 1
+            del old["evaluation"]["evaluator"]
+            del old["evaluation"]["predicates"]
+            del old["outcomes"]["failure_taxonomy"]
+            old_path = root / "task-v1.json"
+            migrated_path = root / "task-v2.json"
+            old_path.write_text(json.dumps(old), encoding="utf-8")
+
+            code, stdout, _ = _run_cli(
+                [
+                    "task",
+                    "migrate",
+                    str(old_path),
+                    "--output",
+                    str(migrated_path),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(stdout)["schema_version"], 2)
+            self.assertIn("evaluator", json.loads(migrated_path.read_text())["evaluation"])
+
+            revised = json.loads(migrated_path.read_text(encoding="utf-8"))
+            revised["compute"]["max_timesteps"] *= 2
+            revised_path = root / "task-v2-revised.json"
+            revised_path.write_text(json.dumps(revised), encoding="utf-8")
+            code, stdout, _ = _run_cli(
+                [
+                    "task",
+                    "compatibility",
+                    str(migrated_path),
+                    str(revised_path),
+                    "--policy",
+                    "training_resume",
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(json.loads(stdout)["compatible"])
+
+    def test_gate_cli_returns_nonzero_when_suite_fails(self) -> None:
+        from simrig.task_contract import freeze_task_contract, task_contract_template
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            contract = task_contract_template("RobotTask")
+            contract["behavior"]["objective"] = "Track a command."
+            contract["interfaces"]["actions"] = "Normalized actuator commands."
+            contract["interfaces"]["observations"] = "Proprioception and command."
+            contract["reset"]["training"] = "Nominal command distribution."
+            contract["reset"]["native"] = "Same as training."
+            contract["episode"]["horizon_steps"] = 100
+            contract["outcomes"]["success"] = "Independent tracking success."
+            contract["outcomes"]["failure"] = "Fall or timeout."
+            frozen = root / "task.frozen.json"
+            report = root / "eval.json"
+            frozen.write_text(json.dumps(freeze_task_contract(contract)), encoding="utf-8")
+            report.write_text(
+                json.dumps({"seed": 0, "task_success": False}), encoding="utf-8"
+            )
+
+            code, stdout, _ = _run_cli(
+                ["gate", str(report), "--contract", str(frozen), "--json"]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(stdout)["passed"])
+
+    def test_eval_suite_and_checkpoint_ranking_cli(self) -> None:
+        suite_result = {
+            "passed": True,
+            "checkpoint": {"path": "policy.params", "sha256": "abc"},
+        }
+        ranking = {"reward_used_for_ranking": False, "checkpoints": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "suite.json"
+            with patch("simrig.cli.run_evaluation_suite", return_value=suite_result) as run:
+                code, _, _ = _run_cli(
+                    [
+                        "eval-suite",
+                        "policy.params",
+                        "--contract",
+                        "task.frozen.json",
+                        "--suite",
+                        "promotion",
+                        "--output",
+                        str(output),
+                        "--max-scenarios",
+                        "2",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(run.call_args.kwargs["limits"].max_scenarios, 2)
+            self.assertTrue(output.is_file())
+
+            with (
+                patch("simrig.cli.load_suite_reports", return_value=[suite_result]),
+                patch("simrig.cli.rank_checkpoints", return_value=ranking),
+            ):
+                code, stdout, _ = _run_cli(
+                    ["rank-checkpoints", str(output), "--json"]
+                )
+            self.assertEqual(code, 0)
+            self.assertFalse(json.loads(stdout)["reward_used_for_ranking"])
+
     def test_cli_list_models_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -187,7 +332,11 @@ class CliTests(unittest.TestCase):
                     "warp",
                     "--seed",
                     "12",
+                    "--contract",
+                    "task.frozen.json",
                     "--no-domain-randomization",
+                    "--resume",
+                    "runs/old",
                 ]
             )
 
@@ -195,6 +344,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(train.call_args.kwargs["impl"], "warp")
         self.assertEqual(train.call_args.kwargs["seed"], 12)
         self.assertFalse(train.call_args.kwargs["domain_randomization"])
+        self.assertEqual(train.call_args.kwargs["resume"], "runs/old")
+        self.assertEqual(train.call_args.kwargs["task_contract_path"], Path("task.frozen.json"))
 
     def test_eval_can_explicitly_allow_runtime_mismatch(self) -> None:
         with (
@@ -259,38 +410,39 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.port, 8766)
         self.assertEqual(args.render_mode, "threejs")
 
-    def test_lambda_cloud_train_defaults_to_smoke(self) -> None:
+    def test_remote_train_defaults_to_smoke(self) -> None:
         parser = build_parser()
 
         args = parser.parse_args(
             [
-                "cloud",
-                "lambda",
+                "remote",
                 "train",
                 "203.0.113.12",
                 "Go1JoystickFlatTerrain",
                 "--identity",
-                "lambda.pem",
+                "id_ed25519",
                 "--detach",
+                "--contract",
+                "task.frozen.json",
             ]
         )
 
         self.assertEqual(args.host, "203.0.113.12")
         self.assertEqual(args.env_name, "Go1JoystickFlatTerrain")
-        self.assertEqual(args.identity, Path("lambda.pem"))
+        self.assertEqual(args.identity, Path("id_ed25519"))
         self.assertEqual(args.preset, "smoke")
         self.assertEqual(args.impl, "auto")
         self.assertEqual(args.seed, 0)
         self.assertTrue(args.domain_randomization)
         self.assertTrue(args.detach)
+        self.assertEqual(args.contract, "task.frozen.json")
 
-    def test_lambda_prepare_accepts_remote_python(self) -> None:
+    def test_remote_prepare_accepts_remote_python(self) -> None:
         parser = build_parser()
 
         args = parser.parse_args(
             [
-                "cloud",
-                "lambda",
+                "remote",
                 "prepare",
                 "203.0.113.12",
                 "--python",
@@ -299,6 +451,23 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(args.python_command, "/usr/bin/python3.12")
+
+    def test_preset_cloud_is_hidden_alias_for_large(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            ["train", "Go1JoystickFlatTerrain", "--preset", "cloud"]
+        )
+
+        self.assertEqual(args.preset, "large")
+
+    def test_cloud_lambda_command_is_removed(self) -> None:
+        parser = build_parser()
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                ["cloud", "lambda", "train", "203.0.113.12", "Go1JoystickFlatTerrain"]
+            )
 
     def test_preview_accepts_episode_auto_reset_options(self) -> None:
         parser = build_parser()

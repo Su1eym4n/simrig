@@ -9,6 +9,9 @@ from typing import Any
 from simrig.networks import MLP_NETWORK
 
 
+PRESET_NAMES = ("smoke", "local", "large")
+PRESET_ALIASES = {"cloud": "large"}
+
 PRESETS: dict[str, dict[str, Any]] = {
     "smoke": {
         "timesteps": 4096,
@@ -40,7 +43,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "entropy_cost": 1e-2,
         "small_network": False,
     },
-    "cloud": {
+    "large": {
         "timesteps": 200_000_000,
         "num_envs": 8192,
         "num_eval_envs": 128,
@@ -71,23 +74,34 @@ _SCALE_KEYS = (
 )
 
 
+def canonical_preset(name: str) -> str:
+    """Return the canonical preset name, accepting deprecated aliases.
+
+    ``cloud`` remains a hidden alias for the large PPO scale so old run
+    configs and scripts still load. It does not mean SSH or a cloud VM.
+    Use ``simrig remote`` to train on another Linux GPU over SSH.
+    """
+    resolved = PRESET_ALIASES.get(name, name)
+    if resolved not in PRESETS:
+        choices = ", ".join(PRESET_NAMES)
+        raise ValueError(f"Unknown preset: {name}. Choose one of: {choices}")
+    return resolved
+
+
 def preset(name: str) -> dict[str, Any]:
     """Return a mutable copy of a named preset."""
-    if name not in PRESETS:
-        choices = ", ".join(sorted(PRESETS))
-        raise ValueError(f"Unknown preset: {name}. Choose one of: {choices}")
-    return dict(PRESETS[name])
+    return dict(PRESETS[canonical_preset(name)])
 
 
 def apply_preset_scale(name: str, upstream: dict[str, Any]) -> dict[str, Any]:
     """Bound an upstream PPO config for SimRig's smoke/local run sizes.
 
-    The cloud preset preserves the upstream task-specific configuration. Smoke
-    and local keep tuned optimizer, reward, and network settings while limiting
-    the expensive rollout/update dimensions.
+    The large preset (formerly ``cloud``) preserves the upstream task-specific
+    configuration. Smoke and local keep tuned optimizer, reward, and network
+    settings while limiting the expensive rollout/update dimensions.
     """
     resolved = dict(upstream)
-    if name == "cloud":
+    if canonical_preset(name) == "large":
         return resolved
 
     limits = preset(name)

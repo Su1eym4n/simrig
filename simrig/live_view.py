@@ -293,6 +293,7 @@ def _live_html() -> str:
     <div id="render-meta">Three.js · connecting to script…</div>
     <button class="secondary" id="reset-camera">Reset Camera</button>
     <button class="secondary" id="clear-trail">Clear Trail</button>
+    <button class="secondary" id="hide-trail">Show Trail</button>
     <h1 style="margin-top:18px">Script State</h1>
     <pre id="status">loading</pre>
   </aside>
@@ -309,6 +310,7 @@ def _live_html() -> str:
     const meshGeometries = new Map();
     const trailPoints = [];
     let trail = null;
+    let trailVisible = false;
     let stateTimer = null;
     let targetPollMs = 33;
 
@@ -429,11 +431,18 @@ def _live_html() -> str:
             new THREE.BufferGeometry(),
             new THREE.LineBasicMaterial({color: 0x38bdf8}),
           );
+          trail.visible = trailVisible;
           scene.add(trail);
         }
         trail.geometry.dispose();
         trail.geometry = new THREE.BufferGeometry().setFromPoints(trailPoints);
       }
+    }
+
+    function setTrailVisible(visible) {
+      trailVisible = visible;
+      if (trail !== null) trail.visible = visible;
+      document.getElementById('hide-trail').textContent = visible ? 'Hide Trail' : 'Show Trail';
     }
 
     function clearTrail() {
@@ -534,6 +543,9 @@ def _live_html() -> str:
 
     document.getElementById('reset-camera').addEventListener('click', fitCamera);
     document.getElementById('clear-trail').addEventListener('click', clearTrail);
+    document.getElementById('hide-trail').addEventListener('click', () => {
+      setTrailVisible(!trailVisible);
+    });
     window.addEventListener('resize', resize);
     resize();
     animate();

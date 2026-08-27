@@ -49,19 +49,21 @@ def load_custom_env_metadata(path: Path | str) -> dict[str, Any]:
     """Load declarative metadata without constructing the environment.
 
     Supported optional module hooks are ``network_spec()``, ``vision_spec()``,
-    and ``training_config()``. Uppercase mapping constants with the same names
-    are also accepted for simple modules.
+    ``training_config()``, and ``success_spec()``. Uppercase mapping constants
+    with the same names are also accepted for simple modules.
     """
     module = import_env_module(path)
     default_config = _call_optional_mapping(module, "default_config")
     network_value = _call_or_value(module, "network_spec", "NETWORK_SPEC")
     vision_value = _call_or_value(module, "vision_spec", "VISION_SPEC")
     training_value = _call_or_value(module, "training_config", "TRAINING_CONFIG")
+    success_value = _call_or_value(module, "success_spec", "SUCCESS_SPEC")
     return {
         "default_config": default_config,
         "network_spec": normalize_network_spec(network_value),
         "vision_spec": _mapping_or_empty(vision_value, "vision_spec"),
         "training_config": _mapping_or_empty(training_value, "training_config"),
+        "success_spec": _mapping_or_empty(success_value, "success_spec"),
     }
 
 
@@ -84,6 +86,7 @@ def load_custom_env_static_metadata(path: Path | str) -> dict[str, Any]:
         "NETWORK_SPEC",
         "VISION_SPEC",
         "TRAINING_CONFIG",
+        "SUCCESS_SPEC",
     }
     values: dict[str, dict[str, Any]] = {}
     for node in tree.body:
@@ -112,6 +115,7 @@ def load_custom_env_static_metadata(path: Path | str) -> dict[str, Any]:
         "network_spec": normalize_network_spec(values.get("NETWORK_SPEC")),
         "vision_spec": values.get("VISION_SPEC", {}),
         "training_config": values.get("TRAINING_CONFIG", {}),
+        "success_spec": values.get("SUCCESS_SPEC", {}),
     }
 
 

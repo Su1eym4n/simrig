@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
 from simrig.playground_backend import (
+    _adjust_num_evals_for_timestep_budget,
     _apply_command,
     _copy_mocap_state,
     _training_env_overrides,
+    _verify_resume_compatibility,
     inspect_env,
     list_envs,
     resolve_training_config,
@@ -17,6 +20,40 @@ from simrig.playground_backend import (
 
 
 class PlaygroundBackendTests(unittest.TestCase):
+    def test_adjust_num_evals_bounds_short_large_run_overshoot(self) -> None:
+        config = {
+            "timesteps": 500_000,
+            "num_evals": 20,
+            "batch_size": 256,
+            "unroll_length": 20,
+            "num_minibatches": 32,
+            "action_repeat": 1,
+            "num_resets_per_eval": 0,
+        }
+
+        _adjust_num_evals_for_timestep_budget(config)
+
+        self.assertEqual(config["num_evals_requested"], 20)
+        self.assertEqual(config["num_evals"], 5)
+        self.assertEqual(config["training_step_quantum"], 163_840)
+        self.assertEqual(config["estimated_total_timesteps"], 655_360)
+
+    def test_adjust_num_evals_minimizes_eight_million_step_run(self) -> None:
+        config = {
+            "timesteps": 8_000_000,
+            "num_evals": 20,
+            "batch_size": 256,
+            "unroll_length": 20,
+            "num_minibatches": 32,
+            "action_repeat": 1,
+            "num_resets_per_eval": 0,
+        }
+
+        _adjust_num_evals_for_timestep_budget(config)
+
+        self.assertEqual(config["num_evals"], 8)
+        self.assertEqual(config["estimated_total_timesteps"], 8_028_160)
+
     def test_resolve_training_config_scales_upstream_without_losing_tuned_values(self) -> None:
         registry = MagicMock()
         registry.get_default_config.return_value = {"impl": "warp"}
@@ -120,7 +157,7 @@ def training_config():
         ):
             config = resolve_training_config(
                 "RobotTask",
-                preset_name="cloud",
+                preset_name="large",
                 impl="auto",
             )
 
@@ -199,6 +236,198 @@ def training_config():
         self.assertIn("32", run.command)
         self.assertTrue(run.config["domain_randomization"])
         self.assertEqual(run.config["provenance"], {"test": True})
+
+    def test_train_resume_passes_restore_checkpoint_path(self) -> None:
+        env = MagicMock()
+        env.xml_path = None
+        model_io = MagicMock()
+        ppo = MagicMock()
+        ppo.train.return_value = (None, "params", {"eval/episode_reward": 1.0})
+        config = {
+            "timesteps": 32,
+            "num_envs": 4,
+            "batch_size": 4,
+            "num_evals": 1,
+            "num_eval_envs": 1,
+            "episode_length": 8,
+            "unroll_length": 2,
+            "num_minibatches": 1,
+            "num_updates_per_batch": 1,
+            "discounting": 0.97,
+            "learning_rate": 3e-4,
+            "entropy_cost": 1e-2,
+            "normalize_observations": True,
+            "action_repeat": 1,
+            "reward_scaling": 1.0,
+            "num_resets_per_eval": 0,
+            "seed": 7,
+            "impl": "warp",
+            "impl_requested": "auto",
+            "network_type": "mlp",
+            "network_factory": {"policy_hidden_layer_sizes": (32, 32)},
+            "ppo_config_source": "upstream:test",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "old"
+            checkpoints = run_dir / "checkpoints"
+            checkpoints.mkdir(parents=True)
+            (checkpoints / "ckpt").write_text("x", encoding="utf-8")
+            (run_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "env_name": "RobotTask",
+                        "config": {
+                            "env_ref": "RobotTask",
+                            "network_type": "mlp",
+                            "impl": "warp",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "simrig.playground_backend._import_training_deps",
+                    return_value=(
+                        MagicMock(),
+                        MagicMock(),
+                        model_io,
+                        MagicMock(),
+                        MagicMock(),
+                        ppo,
+                        MagicMock(),
+                    ),
+                ),
+                patch("simrig.playground_backend.resolve_training_config", return_value=config),
+                patch("simrig.playground_backend.load_env", return_value=env),
+                patch("simrig.playground_backend._resolve_domain_randomizer", return_value=None),
+                patch("simrig.playground_backend.runtime_manifest", return_value={"python": "test"}),
+                patch("simrig.playground_backend.training_provenance", return_value={"test": True}),
+            ):
+                train_ppo(
+                    "RobotTask",
+                    output=Path(tmp) / "new",
+                    resume=run_dir,
+                    seed=7,
+                )
+
+        self.assertEqual(
+            ppo.train.call_args.kwargs["restore_checkpoint_path"],
+            str(checkpoints.resolve()),
+        )
+
+    def test_train_rejects_resolved_steps_above_frozen_contract_budget(self) -> None:
+        from simrig.task_contract import freeze_task_contract, task_contract_template
+
+        config = {
+            "timesteps": 32,
+            "estimated_total_timesteps": 64,
+            "num_envs": 4,
+            "batch_size": 4,
+            "num_evals": 1,
+            "impl": "jax",
+            "network_factory": {"policy_hidden_layer_sizes": (32, 32)},
+        }
+        contract = task_contract_template("RobotTask")
+        contract["behavior"]["objective"] = "Track a command."
+        contract["interfaces"]["actions"] = "Normalized actuator commands."
+        contract["interfaces"]["observations"] = "Proprioception and command."
+        contract["reset"]["training"] = "Nominal command distribution."
+        contract["reset"]["native"] = "Same as training."
+        contract["episode"]["horizon_steps"] = 100
+        contract["outcomes"]["success"] = "Independent tracking success."
+        contract["outcomes"]["failure"] = "Fall or timeout."
+        contract["compute"]["max_timesteps"] = 63
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.frozen.json"
+            path.write_text(json.dumps(freeze_task_contract(contract)), encoding="utf-8")
+            with (
+                patch(
+                    "simrig.playground_backend._import_training_deps",
+                    return_value=(MagicMock(),) * 7,
+                ),
+                patch("simrig.playground_backend.resolve_training_config", return_value=config),
+                self.assertRaisesRegex(ValueError, "estimated=64"),
+            ):
+                train_ppo("RobotTask", task_contract_path=path)
+
+    def test_resume_rejects_a_different_task_contract_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "env_name": "RobotTask",
+                        "config": {
+                            "env_ref": "RobotTask",
+                            "network_type": "mlp",
+                            "impl": "jax",
+                            "task_contract": {"sha256": "old"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "task contract"):
+                _verify_resume_compatibility(
+                    run_dir,
+                    env_name="RobotTask",
+                    config={
+                        "network_type": "mlp",
+                        "impl": "jax",
+                        "task_contract": {"sha256": "new"},
+                    },
+                    allow_mismatch=False,
+                )
+
+    def test_resume_policy_allows_compute_only_contract_change_with_snapshot(self) -> None:
+        from simrig.task_contract import contract_sha256, freeze_task_contract
+        from tests.test_task_contract import valid_contract
+
+        old_contract = valid_contract()
+        new_contract = json.loads(json.dumps(old_contract))
+        new_contract["compute"]["max_timesteps"] *= 2
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            snapshot = run_dir / "task_contract.frozen.json"
+            snapshot.write_text(
+                json.dumps(freeze_task_contract(old_contract)), encoding="utf-8"
+            )
+            (run_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "env_name": "envs/reach.py",
+                        "config": {
+                            "env_ref": "envs/reach.py",
+                            "network_type": "mlp",
+                            "impl": "jax",
+                            "task_contract": {
+                                "sha256": contract_sha256(old_contract),
+                                "snapshot_path": str(snapshot),
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = _verify_resume_compatibility(
+                run_dir,
+                env_name="envs/reach.py",
+                config={
+                    "network_type": "mlp",
+                    "impl": "jax",
+                    "task_contract": {"sha256": contract_sha256(new_contract)},
+                },
+                allow_mismatch=False,
+                active_task_contract=new_contract,
+                contract_policy="training_resume",
+            )
+
+        self.assertTrue(result["compatible"])
+        self.assertTrue(result["contract"]["compatible"])
 
     def test_copy_mocap_state_copies_optional_arrays(self) -> None:
         class Data:

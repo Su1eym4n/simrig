@@ -22,11 +22,14 @@ Classify the input before acting:
 | “Show this robot” | View model only |
 | Running MuJoCo Python controller | Add `LiveWebViewer` around its existing loop |
 | “Train this robot to …” | Define the task, then use an existing or custom environment |
+| GPU IP / SSH host / “train on my Linux box” | `simrig remote` (not raw ssh) |
 | Custom terrain, props, targets, or contacts | Custom scene plus custom environment |
 
 Do not treat a robot model as a task. A trainable task also requires action
 mapping, observations, reset distribution, rewards, termination, and measurable
-success criteria.
+success criteria. `--preset large` is PPO scale. `simrig remote` is SSH to
+another Linux GPU. Do not conflate them. Never drop to raw `ssh`/`nohup` when
+`simrig remote` exists.
 
 ## Check the installation
 
@@ -85,21 +88,76 @@ For a known environment, run:
 simrig inspect-env ENV_NAME --save-report
 ```
 
-### 2. Define a testable task
+### 2. Define physical success before implementation
 
-Translate the user's request into a short task contract before authoring reward
-logic. Specify:
+Complete a **Physical Success Definition** before authoring rewards,
+termination logic, a custom environment, or any training configuration. This
+is a mandatory semantic gate, not a reward-design exercise. An agent cannot
+guarantee that its interpretation matches the user's intent: it must draft the
+definition, check it against the model and scene, challenge it with
+counterexamples, and obtain focused user confirmation for every unresolved
+choice that changes what counts as success.
 
-- desired behavior and command or target distribution;
-- initial-state and scene randomization;
-- allowed contacts and failure conditions;
-- episode horizon;
-- measurable evaluation scenarios and pass criteria.
+Start from inspection evidence for the exact model and task scene. Name the
+bodies, sites, joints, objects, contacts, or sensors that will be measured; do
+not use labels such as "balanced," "reached," or "placed" without defining
+their physical measurements. The definition must state:
 
-Ask one focused question only when a missing choice materially changes the
-task. Continue safe inspection while waiting. Do not invent task semantics from
-the robot or task name. Read [task-design.md](references/task-design.md) for
-locomotion, posture, jumping, manipulation, and scene-specific decisions.
+- each necessary success condition as a quantity with units, coordinate frame,
+  threshold or interval, required duration/consecutive control ticks, and
+  evaluation horizon;
+- allowed and forbidden contacts, plus prioritized terminal failures for
+  unsafe contact, invalid state, ordinary task failure, and timeout;
+- the initial/reset distribution and nominal, boundary, perturbation, and
+  held-out scenario-by-seed cases;
+- feasibility evidence from joint limits, actuator authority, reachable
+  workspace, simulator/control timing, expected noise, and sensors actually
+  available to the evaluator and deployed policy;
+- explicit false positives: poses, contacts, trajectories, or shortcuts that
+  satisfy a naive metric while violating the requested behavior;
+- negative controls (at minimum zero and random action), a known-valid positive
+  control, and a deliberately exploitative control expected to earn reward or
+  look plausible while failing physical success.
+
+Separate **necessary outcome conditions** from **optimization preferences**.
+Necessary conditions define independent success and promotion. Preferences
+such as energy, smoothness, speed, style, clearance, or comfort belong in the
+reward only when their violation should not make an otherwise valid episode
+fail. If a preference is actually mandatory, promote it to a measured success
+condition or terminal safety rule before reward authoring.
+
+Map the definition into a draft task contract and an evaluator plan. The
+task-owned evaluator must emit raw metrics, events, and contacts from the named
+physical measurements; generic predicates and promotion gates derive success
+without reading reward. Document unresolved assumptions. Ask one focused
+confirmation question that exposes only the choices that change the semantics,
+safety envelope, or feasibility of success. Do not freeze the contract, write
+the reward/termination/environment, or train until the user confirms those
+choices. Read [task-design.md](references/task-design.md) for the required
+definition template, feasibility audit, counterexample analysis, and controls.
+
+Create the machine-readable draft while developing the definition, but freeze
+it only after the Physical Success Definition is complete and confirmed:
+
+```bash
+simrig task init ENV_OR_PATH --output task.json
+# Populate the physical definition, evaluator plan, suites, and assumptions.
+simrig task validate task.json
+# Freeze only after focused user confirmation.
+simrig task freeze task.json --output task.frozen.json
+```
+
+Do not freeze TODO placeholders. Use `simrig task diff` and create a new frozen
+version when task semantics, resets, outcomes, or promotion suites change.
+Migrate old schemas explicitly with `simrig task migrate`; never silently
+reinterpret a frozen contract. Use `simrig task compatibility --policy ...`
+when resume, evaluation, or report comparison spans contract versions.
+
+Continue safe inspection while waiting for confirmation. Do not invent task
+semantics from the robot or task name. The user confirmation establishes an
+agreed testable interpretation, not a guarantee that prose perfectly captures
+the user's real-world intent; retain assumptions and limitations in the frozen
+contract and handoff.
 
 ### 3. Prefer an existing Playground task
 
@@ -109,7 +167,7 @@ Check available environments before writing a custom one:
 simrig list-envs --backend mujoco-playground
 simrig inspect-env ENV_NAME
 simrig smoke ENV_NAME --steps 10
-simrig train ENV_NAME --preset smoke --impl auto --seed 0
+simrig train ENV_NAME --preset smoke --impl auto --seed 0 --contract task.frozen.json
 ```
 
 Use an existing environment only when its robot, task semantics, actions, and
@@ -127,7 +185,8 @@ objects, obstacles, contact pairs, sensors, cameras, or task-specific
 keyframes. Preserve relative includes and mesh paths. Inspect and view the
 result before implementing the environment.
 
-Scaffold only after the task contract is known:
+Scaffold only after the Physical Success Definition is confirmed and the task
+contract is frozen:
 
 ```bash
 simrig new-env TASK_NAME --model path/to/scene.xml --template mjx
@@ -147,7 +206,7 @@ Run every gate and stop at the first failure:
 simrig validate-env envs/TASK_NAME.py
 simrig validate-env envs/TASK_NAME.py --runtime
 simrig smoke envs/TASK_NAME.py --steps 10
-simrig train envs/TASK_NAME.py --preset smoke --seed 0
+simrig train envs/TASK_NAME.py --preset smoke --seed 0 --contract task.frozen.json
 ```
 
 Treat static validation as a structure check only. Treat runtime validation as
@@ -163,7 +222,7 @@ after the training dependencies are available. Then add the vision gate:
 simrig validate-env envs/TASK_NAME.py --vision
 simrig validate-env envs/TASK_NAME.py --runtime --vision
 simrig smoke envs/TASK_NAME.py --steps 5
-simrig train envs/TASK_NAME.py --preset smoke
+simrig train envs/TASK_NAME.py --preset smoke --contract task.frozen.json
 ```
 
 `--vision` checks the CNN type, declared pixel/camera contract, runtime HWC
@@ -182,24 +241,45 @@ Use `smoke` first. Use `local` only after smoke training produces a checkpoint
 and sane metrics:
 
 ```bash
-simrig train ENV_OR_PATH --preset local
+simrig train ENV_OR_PATH --preset local --contract task.frozen.json
 ```
 
-Treat `cloud` as a large configuration, not as a remote job launcher. Do not run
-it without an explicit compute destination and user approval. Use
-`--timesteps`, `--num-envs`, and `--batch-size` for intentional overrides.
-Record the exact run directory and preserve its `config.json`,
+`--preset large` is a large PPO configuration on the current process. It does
+not SSH anywhere. A GPU on this machine uses `simrig train ENV --preset large`.
+Do not run it without user approval. Use `--timesteps`, `--num-envs`, and
+`--batch-size` for intentional overrides. Record the exact run directory and
+preserve its `config.json`, `metrics.jsonl`, `progress.json`,
 `final_metrics.json`, checkpoints, and `policy.params`.
 Every new run should record the resolved implementation, seed, network,
 randomizer, source hashes, Git state, device inventory, and runtime versions.
 
-For an already-provisioned Lambda On-Demand Cloud GPU, read
-[lambda-cloud.md](references/lambda-cloud.md). Use `simrig cloud lambda connect`
-for the first interactive SSH connection, then `check`, `prepare`, remote
-`smoke`, and remote `train --preset smoke` before a detached `cloud` run. SimRig
-does not provision or terminate the billable instance. Fetch the complete run
-directory and remind the user to terminate the instance after artifacts are
-safe.
+To continue a crashed or shorter run:
+
+```bash
+simrig train ENV_OR_PATH --resume runs/RUN
+simrig status runs/RUN
+```
+
+For another already-running Linux GPU (workstation, lab box, or cloud VM),
+read [remote-gpu.md](references/remote-gpu.md). Use `simrig remote connect` for
+the first interactive SSH connection, then `check`, `prepare`, remote `smoke`,
+and remote `train --preset smoke` before a detached `--preset large` run:
+
+```bash
+simrig remote connect HOST --identity KEY
+simrig remote check HOST --identity KEY
+simrig remote prepare HOST --identity KEY
+simrig remote smoke HOST ENV_OR_PATH --identity KEY --steps 10
+simrig remote train HOST ENV_OR_PATH --identity KEY --preset smoke --contract task.frozen.json
+simrig remote train HOST ENV_OR_PATH --identity KEY --preset large --contract task.frozen.json --detach
+simrig remote status HOST REMOTE_OUTPUT --identity KEY --lines 50
+simrig remote fetch HOST REMOTE_OUTPUT --identity KEY
+```
+
+SimRig does not provision or terminate the machine. Fetch the complete run
+directory and remind the user to stop a billable VM after artifacts are safe.
+`--preset cloud` is a hidden alias for `large`; do not teach it. The old
+`simrig cloud lambda` command is gone.
 
 ### 7. Evaluate behavior, not only reward
 
@@ -241,18 +321,53 @@ agent-visible review; use `demo` only when the user explicitly wants the native
 desktop viewer.
 
 Evaluate across multiple seeds and the scenarios from the task contract.
-Compare success rate and task-specific metrics, not just total reward. Read
+Compare success rate and task-specific metrics, not just total reward. If the
+env exposes `state.metrics["success"]` or `SUCCESS_SPEC`, `simrig eval` reports
+`task_success` as a boolean; otherwise it stays unknown. Never rename rollout
+completion to success. Read
 [evaluation-and-operations.md](references/evaluation-and-operations.md) for
 checkpoint compatibility, command-specific evaluation, run artifacts, and
 failure triage.
 
+Apply the frozen contract to the independent JSON reports:
+
+```bash
+simrig gate reports/*.json --contract task.frozen.json --suite nominal
+simrig reward-audit reports/*.json
+```
+
+When the contract declares an evaluator plugin, prefer the reproducible matrix
+runner. The evaluator emits raw metrics/events/contacts; generic predicates
+derive task success and terminal reasons independently of reward:
+
+```bash
+simrig eval-suite POLICY --contract task.frozen.json --suite promotion
+simrig reward-probe reports/*.json
+simrig rank-checkpoints reports/checkpoint-*.json
+```
+
+Required scenario/seed coverage is a gate. A capped `eval-suite` or
+`eval-checkpoints RUN_DIR` is useful during training but cannot pass a larger
+promotion matrix. Reports may be ranked together only when contract, evaluator,
+and suite identities match. Read
+[evaluation-and-operations.md](references/evaluation-and-operations.md) for the
+plugin protocol and terminal taxonomy.
+
 ## Enforce hard rules
 
 - Never claim that an XML is trainable because it compiles or steps.
+- Never author reward, termination, a custom environment, or training settings
+  before a physically grounded success definition has been drafted,
+  feasibility-checked, adversarially challenged, and confirmed by the user.
+- Never claim to guarantee the user's semantic intent. Record assumptions,
+  identify meaning-changing choices, and obtain focused confirmation before
+  freezing the task contract.
 - Never invent a complete reward, observation, or termination design from a
   model name.
 - Never start long training before runtime validation, environment smoke, and
   `--preset smoke` training pass.
+- Never treat `--preset large` as a remote launcher; use `simrig remote` for SSH.
+- Never use raw `ssh`/`nohup` when `simrig remote` exists.
 - Never use a policy with a different environment or network architecture
   without explicit compatibility evidence.
 - Never hide project-specific research logic inside generic SimRig code.
@@ -266,9 +381,33 @@ failure triage.
 Return a compact evidence summary:
 
 - model or environment used;
-- task contract and scene assumptions;
+- confirmed Physical Success Definition, including measured entities, units,
+  frames, thresholds, duration/horizon, contacts, and terminal precedence;
+- task contract, scene assumptions, unresolved limitations, and the user's
+  meaning-changing confirmations;
+- feasibility checks, false-positive challenges, and positive/negative control
+  outcomes;
 - validation and smoke results;
 - exact training command, preset, and run directory;
 - checkpoint and evaluation metrics;
 - preview URL when running;
 - remaining limitation or next experiment.
+
+## Commands
+
+| Intent | Command |
+|---|---|
+| See robot | `simrig view-model unitree_g1 --port 8766` |
+| List / inspect env | `simrig list-envs --backend mujoco-playground` / `simrig inspect-env NAME` |
+| Validate custom env | `simrig validate-env PATH.py [--runtime]` |
+| Smoke | `simrig smoke NAME_OR_PATH.py --steps 10` |
+| Train (this machine) | `simrig train NAME_OR_PATH.py --preset smoke --contract task.frozen.json` then `local` / `large` |
+| Resume | `simrig train NAME_OR_PATH.py --resume runs/RUN` |
+| Local run status | `simrig status runs/RUN` |
+| Other Linux GPU | `simrig remote check` / `prepare` / `smoke` / `train HOST ENV`, then `--preset large --detach` |
+| Remote status / fetch | `simrig remote status HOST RUN` / `simrig remote fetch HOST RUN` |
+| Eval | `simrig eval POLICY --env NAME` |
+| Independent suite | `simrig eval-suite POLICY --contract CONTRACT --suite NAME` |
+| Bounded live-run check | `simrig eval-checkpoints RUN --contract CONTRACT` |
+| Reward probe / ranking | `simrig reward-probe REPORTS...` / `simrig rank-checkpoints REPORTS...` |
+| Policy preview | `simrig preview POLICY --env NAME --port 8765` |

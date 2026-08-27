@@ -7,6 +7,7 @@ from pathlib import Path
 
 from simrig.presets import (
     apply_preset_scale,
+    canonical_preset,
     resolve_network_factory,
     resolve_network_type,
     resolve_small_network,
@@ -30,6 +31,13 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(resolved["batch_size"], 16)
         self.assertEqual(resolved["reward_scaling"], 3.0)
         self.assertEqual(resolved["network_factory"], upstream["network_factory"])
+
+    def test_cloud_alias_matches_large_and_does_not_cap_upstream(self) -> None:
+        upstream = {"timesteps": 200_000_000, "num_envs": 8192, "reward_scaling": 3.0}
+
+        self.assertEqual(canonical_preset("cloud"), "large")
+        self.assertEqual(apply_preset_scale("cloud", upstream)["timesteps"], 200_000_000)
+        self.assertEqual(apply_preset_scale("large", upstream)["timesteps"], 200_000_000)
 
     def test_resolve_network_factory_reads_exact_recorded_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

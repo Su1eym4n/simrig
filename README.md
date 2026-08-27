@@ -26,10 +26,10 @@ rewards, resets, termination conditions, validation, training, and evaluation.
 
 ## From prompt to simulation
 
-### Train Go1 through a smoke-gated cloud workflow
+### Train Go1 through a smoke-gated remote GPU workflow
 
 SimRig prepares the existing Go1 locomotion environment and runs local smoke
-tests before requesting the user's Lambda Cloud details. The full cloud run
+tests before requesting SSH details for another Linux GPU. The large run
 starts only after that handoff. The recorded result below shows the trained
 checkpoint downloaded and running in SimRig's interactive browser preview.
 
@@ -37,8 +37,8 @@ checkpoint downloaded and running in SimRig's interactive browser preview.
 <summary><strong>Prompt</strong></summary>
 
 > Prepare the full Go1 robot training setup and run local smoke tests to verify
-> everything works. Once the tests pass, ask me for my Lambda Cloud details
-> before starting the full training run.
+> everything works. Once the tests pass, ask me for SSH details for an
+> already-running Linux GPU before starting the large training run.
 
 </details>
 
@@ -154,6 +154,69 @@ Open a project containing a MuJoCo robot or scene and ask the agent naturally:
 You can invoke the workflow explicitly with `$simrig`, but the skill can also
 activate automatically when the request matches its description.
 
+### Freeze the task before training
+
+Create a portable JSON contract before implementing or scaling a new task:
+
+```bash
+simrig task init envs/my_task.py --output task.json
+# Edit every TODO: behavior, interfaces, resets, outcomes, scenarios, and budgets.
+simrig task validate task.json
+simrig task freeze task.json --output task.frozen.json
+```
+
+Frozen contracts have a deterministic content hash. Training can require that
+contract and rejects a resolved Brax rollout count above its compute budget:
+
+```bash
+simrig train envs/my_task.py --preset smoke --contract task.frozen.json
+```
+
+Each contracted run writes `run_manifest.json` with contract identity, lineage,
+runtime, Git/source/model provenance, requested and resolved steps, progress,
+GPU-hours, optional cost, and final failure/completion status.
+
+Apply contract gates to independently generated JSON evaluation reports:
+
+```bash
+simrig gate reports/seed-*.json \
+  --contract task.frozen.json \
+  --suite nominal \
+  --output reports/nominal_gate.json
+
+simrig reward-audit reports/seed-*.json
+```
+
+Gate requirements are task-agnostic metric rules. Locomotion, manipulation,
+vision, and other tasks expose their own outcome metrics; SimRig provides seed
+and scenario coverage, grouping, aggregation, thresholds, and pass/fail logic.
+
+Task-contract schema v2 can also declare a backend-neutral evaluator plugin and
+event/contact predicates. Run the complete scenario-by-seed matrix and rank
+checkpoints only from independent outcomes:
+
+```bash
+simrig eval-suite runs/RUN/policy.params \
+  --contract task.frozen.json --suite promotion \
+  --output reports/policy-promotion.json
+simrig reward-probe reports/*.json
+simrig rank-checkpoints reports/checkpoint-*.json
+```
+
+Missing fixed-seed coverage fails promotion, as does high training reward
+without independently verified success. `simrig eval-checkpoints` provides a
+bounded one-shot check of available run checkpoints; it does not start a
+persistent monitor. See [Independent evaluation](docs/independent-evaluation.md)
+and the [planar-arm acceptance example](examples/phase1/README.md).
+
+Older contracts migrate explicitly to a reviewable draft, and compatibility is
+checked under a named purpose rather than inferred:
+
+```bash
+simrig task migrate task-v1.json --output task-v2.json
+simrig task compatibility OLD NEW --policy training_resume
+```
+
 ### Existing Playground environment
 
 ```bash
@@ -163,10 +226,10 @@ simrig smoke Go1JoystickFlatTerrain --steps 10
 simrig train Go1JoystickFlatTerrain --preset smoke --impl auto --seed 0
 ```
 
-Use the `smoke` preset before a longer `local` or `cloud` configuration.
+Use the `smoke` preset before a longer `local` or `large` configuration.
 For registered Playground environments, SimRig starts from the environment's
 tuned Brax PPO/network configuration and declared domain randomizer, then
-bounds the expensive dimensions for `smoke` or `local`. The `cloud` preset uses
+bounds the expensive dimensions for `smoke` or `local`. The `large` preset uses
 the full upstream task configuration unless you pass explicit overrides.
 
 `--impl auto` uses the environment's default implementation when supported. It
@@ -339,31 +402,34 @@ using the environment's configured observation pipeline. Use
 `--render-mode mujoco` for the older full-page local image stream or
 `--render-mode topdown` for the schematic fallback.
 
-### Train on a Lambda Cloud GPU
+### Train on another Linux GPU over SSH
 
-After launching a Lambda On-Demand instance with an SSH key, SimRig can connect,
-sync this checkout, verify JAX GPU visibility, train, monitor a detached run,
-and download its artifacts:
+`simrig remote` talks to an already-running Linux GPU over SSH: a workstation,
+a lab box, or a cloud VM you already started. It does not create or stop the
+machine. After the first interactive `connect` (so SSH can verify the host),
+SimRig can sync this checkout, verify JAX GPU visibility, train, monitor a
+detached run, and download its artifacts:
 
 ```bash
-simrig cloud lambda connect INSTANCE_IP --identity ~/Downloads/lambda-key.pem
-simrig cloud lambda prepare INSTANCE_IP --identity ~/Downloads/lambda-key.pem
-simrig cloud lambda smoke INSTANCE_IP Go1JoystickFlatTerrain \
-  --identity ~/Downloads/lambda-key.pem
-simrig cloud lambda train INSTANCE_IP Go1JoystickFlatTerrain \
-  --identity ~/Downloads/lambda-key.pem \
+simrig remote connect HOST --identity ~/.ssh/id_ed25519
+simrig remote prepare HOST --identity ~/.ssh/id_ed25519
+simrig remote smoke HOST Go1JoystickFlatTerrain \
+  --identity ~/.ssh/id_ed25519
+simrig remote train HOST Go1JoystickFlatTerrain \
+  --identity ~/.ssh/id_ed25519 \
   --preset smoke \
   --impl auto \
   --seed 0
 ```
 
 Only after the environment and PPO smoke gates pass, start a detached large
-run with `--preset cloud --detach`. SimRig operates on an instance you already
-provisioned; it never launches or terminates billable Lambda resources. See the
-complete [Lambda Cloud GPU guide](docs/lambda-cloud.md), including persistent
-storage, monitoring, artifact download, and shutdown reminders.
+run with `--preset large --detach`. `--preset large` is PPO scale, not a remote
+launcher; a local GPU uses `simrig train ENV --preset large` with no SSH.
+See the complete [remote GPU guide](docs/remote-gpu.md), including persistent
+storage, `simrig status` / `simrig remote status`, artifact download, and
+reminders to stop billable VMs.
 
-Lambda preparation requires Python 3.11+ and installs a pinned Playground
+Remote preparation requires Python 3.11+ and installs a pinned Playground
 training stack. Every run records its resolved PPO/network configuration,
 implementation, seed, randomizer, source hashes, Git state, JAX devices,
 precision-related environment, and package versions. Checkpoint eval, demo, and
@@ -375,7 +441,7 @@ qualitative review.
 
 - [Examples](examples/README.md)
 - [Agent workflow](docs/agent_workflow.md)
-- [Lambda Cloud GPU training](docs/lambda-cloud.md)
+- [Remote GPU training over SSH](docs/remote-gpu.md)
 - [Agent skill installation](docs/skill-installation.md)
 - [Contributing](CONTRIBUTING.md)
 - [SimRig skill source](skills/simrig/SKILL.md)

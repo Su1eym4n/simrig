@@ -13,6 +13,19 @@ from simrig.core import (
     SmokeResult,
     TrainabilityStatus,
 )
+from simrig.evaluation_suite import (
+    EvaluationLimits,
+    evaluate_checkpoint_directory,
+    run_evaluation_suite,
+)
+from simrig.evaluator import (
+    EvaluationRequest,
+    EvaluatorPlugin,
+    LoadedEvaluator,
+    load_evaluator,
+    run_evaluator,
+)
+from simrig.failures import FailureCategory
 from simrig.mujoco_backend import inspect_model, list_models
 from simrig.playground_backend import (
     demo_policy,
@@ -22,33 +35,78 @@ from simrig.playground_backend import (
     smoke_env,
     train_ppo,
 )
+from simrig.predicates import (
+    PredicateResult,
+    apply_predicates,
+    evaluate_predicate,
+    validate_predicate,
+)
+from simrig.ranking import rank_checkpoints
 from simrig.scaffold import new_env
+from simrig.task_contract import (
+    COMPATIBILITY_POLICIES,
+    ContractValidation,
+    compare_task_contracts,
+    contract_sha256,
+    diff_task_contracts,
+    freeze_task_contract,
+    load_task_contract,
+    migrate_task_contract,
+    save_migrated_task_contract,
+    task_contract_template,
+    validate_task_contract,
+)
 from simrig.validate_env import EnvValidationResult, validate_env
 
 __all__ = [
     "__version__",
     "BackendInfo",
+    "COMPATIBILITY_POLICIES",
+    "ContractValidation",
+    "EvaluationLimits",
+    "EvaluationRequest",
+    "EvaluatorPlugin",
     "EnvInspectionReport",
     "EnvValidationResult",
+    "FailureCategory",
+    "LoadedEvaluator",
     "ModelInspectionReport",
     "RunConfig",
     "SmokeResult",
     "TrainabilityStatus",
+    "PredicateResult",
+    "apply_predicates",
+    "compare_task_contracts",
     "demo_policy",
+    "contract_sha256",
+    "diff_task_contracts",
     "eval_policy",
+    "evaluate_checkpoint_directory",
+    "evaluate_predicate",
     "inspect_env",
     "inspect_model",
     "is_env_module_path",
     "list_envs",
     "list_models",
+    "load_evaluator",
     "LiveWebViewer",
+    "load_task_contract",
     "load_custom_env",
     "load_env",
     "new_env",
+    "migrate_task_contract",
+    "rank_checkpoints",
+    "freeze_task_contract",
     "smoke_env",
     "serve_model_view",
     "serve_policy_preview",
+    "run_evaluation_suite",
+    "run_evaluator",
+    "save_migrated_task_contract",
     "train_ppo",
+    "task_contract_template",
+    "validate_task_contract",
+    "validate_predicate",
     "validate_env",
 ]
 

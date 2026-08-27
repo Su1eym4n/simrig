@@ -6,24 +6,24 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from simrig.lambda_cloud import (
-    LambdaSSHConfig,
-    fetch_lambda,
-    prepare_lambda,
-    smoke_lambda,
+from simrig.remote import (
+    SSHConfig,
+    fetch_remote,
+    prepare_remote,
+    smoke_remote,
     ssh_command,
-    status_lambda,
-    train_lambda,
+    status_remote,
+    train_remote,
     _check_local_requirements,
 )
 
 
-class LambdaCloudTests(unittest.TestCase):
+class RemoteSSHTests(unittest.TestCase):
     def test_ssh_command_uses_identity_user_port_and_tunnel(self) -> None:
-        config = LambdaSSHConfig(
+        config = SSHConfig(
             "203.0.113.12",
             user="ubuntu",
-            identity=Path("keys/lambda.pem"),
+            identity=Path("keys/id_ed25519"),
             port=2222,
         )
 
@@ -38,7 +38,7 @@ class LambdaCloudTests(unittest.TestCase):
 
     def test_config_rejects_shell_metacharacters_in_host(self) -> None:
         with self.assertRaises(ValueError):
-            LambdaSSHConfig("gpu.example; touch /tmp/nope")
+            SSHConfig("gpu.example; touch /tmp/nope")
 
     def test_prepare_syncs_checkout_then_installs_and_checks_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -50,11 +50,11 @@ class LambdaCloudTests(unittest.TestCase):
             (project / "simrig").mkdir()
             completed = subprocess.CompletedProcess([], 0)
             with (
-                patch("simrig.lambda_cloud._check_local_requirements"),
-                patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+                patch("simrig.remote._check_local_requirements"),
+                patch("simrig.remote.subprocess.run", return_value=completed) as run,
             ):
-                prepare_lambda(
-                    LambdaSSHConfig("gpu.example"),
+                prepare_remote(
+                    SSHConfig("gpu.example"),
                     project_dir=project,
                 )
 
@@ -83,11 +83,11 @@ class LambdaCloudTests(unittest.TestCase):
             (project / "simrig").mkdir()
             completed = subprocess.CompletedProcess([], 0)
             with (
-                patch("simrig.lambda_cloud._check_local_requirements"),
-                patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+                patch("simrig.remote._check_local_requirements"),
+                patch("simrig.remote.subprocess.run", return_value=completed) as run,
             ):
-                prepare_lambda(
-                    LambdaSSHConfig("gpu.example"),
+                prepare_remote(
+                    SSHConfig("gpu.example"),
                     project_dir=project,
                     jax_cuda="cuda12",
                 )
@@ -104,11 +104,11 @@ class LambdaCloudTests(unittest.TestCase):
             (project / "simrig").mkdir()
             completed = subprocess.CompletedProcess([], 0)
             with (
-                patch("simrig.lambda_cloud._check_local_requirements"),
-                patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+                patch("simrig.remote._check_local_requirements"),
+                patch("simrig.remote.subprocess.run", return_value=completed) as run,
             ):
-                prepare_lambda(
-                    LambdaSSHConfig("gpu.example"),
+                prepare_remote(
+                    SSHConfig("gpu.example"),
                     project_dir=project,
                     python_command="/usr/bin/python3.12",
                 )
@@ -120,12 +120,12 @@ class LambdaCloudTests(unittest.TestCase):
     def test_train_detached_defaults_to_smoke_and_records_pid(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
         with (
-            patch("simrig.lambda_cloud._check_local_requirements"),
-            patch("simrig.lambda_cloud.timestamp", return_value="20260102-030405"),
-            patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+            patch("simrig.remote._check_local_requirements"),
+            patch("simrig.remote.timestamp", return_value="20260102-030405"),
+            patch("simrig.remote.subprocess.run", return_value=completed) as run,
         ):
-            result = train_lambda(
-                LambdaSSHConfig("gpu.example"),
+            result = train_remote(
+                SSHConfig("gpu.example"),
                 "Go1JoystickFlatTerrain",
                 detach=True,
             )
@@ -147,33 +147,58 @@ class LambdaCloudTests(unittest.TestCase):
         syntax = subprocess.run(["sh", "-n", "-c", remote], check=False)
         self.assertEqual(syntax.returncode, 0)
 
-    def test_train_forwards_impl_seed_and_randomization_choice(self) -> None:
+    def test_train_forwards_impl_seed_resume_and_randomization_choice(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
         with (
-            patch("simrig.lambda_cloud._check_local_requirements"),
-            patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+            patch("simrig.remote._check_local_requirements"),
+            patch("simrig.remote.subprocess.run", return_value=completed) as run,
         ):
-            train_lambda(
-                LambdaSSHConfig("gpu.example"),
+            train_remote(
+                SSHConfig("gpu.example"),
                 "Go1JoystickFlatTerrain",
                 impl="warp",
                 seed=11,
                 domain_randomization=False,
+                resume="runs/old/checkpoints",
+                task_contract="task.frozen.json",
             )
 
         remote = run.call_args.args[0][-1]
         self.assertIn("--impl warp", remote)
         self.assertIn("--seed 11", remote)
         self.assertIn("--no-domain-randomization", remote)
+        self.assertIn("--resume runs/old/checkpoints", remote)
+        self.assertIn("--contract task.frozen.json", remote)
+
+    def test_train_canonicalizes_cloud_preset_to_large(self) -> None:
+        completed = subprocess.CompletedProcess([], 0)
+        with (
+            patch("simrig.remote._check_local_requirements"),
+            patch("simrig.remote.timestamp", return_value="20260102-030405"),
+            patch("simrig.remote.subprocess.run", return_value=completed) as run,
+        ):
+            result = train_remote(
+                SSHConfig("gpu.example"),
+                "Go1JoystickFlatTerrain",
+                preset_name="cloud",
+            )
+
+        self.assertEqual(
+            result.output_dir,
+            "/home/ubuntu/simrig/runs/20260102-030405-Go1JoystickFlatTerrain-large",
+        )
+        remote = run.call_args.args[0][-1]
+        self.assertIn("--preset large", remote)
+        self.assertNotIn("--preset cloud", remote)
 
     def test_remote_smoke_checks_gpu_then_environment(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
         with (
-            patch("simrig.lambda_cloud._check_local_requirements"),
-            patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+            patch("simrig.remote._check_local_requirements"),
+            patch("simrig.remote.subprocess.run", return_value=completed) as run,
         ):
-            code = smoke_lambda(
-                LambdaSSHConfig("gpu.example"),
+            code = smoke_remote(
+                SSHConfig("gpu.example"),
                 "envs/reach.py",
                 steps=7,
             )
@@ -185,11 +210,11 @@ class LambdaCloudTests(unittest.TestCase):
 
     def test_remote_output_cannot_escape_project(self) -> None:
         with (
-            patch("simrig.lambda_cloud._check_local_requirements"),
+            patch("simrig.remote._check_local_requirements"),
             self.assertRaises(ValueError),
         ):
-            train_lambda(
-                LambdaSSHConfig("gpu.example"),
+            train_remote(
+                SSHConfig("gpu.example"),
                 "Go1JoystickFlatTerrain",
                 output="/tmp/outside-project",
             )
@@ -199,12 +224,12 @@ class LambdaCloudTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / "downloaded"
             with (
-                patch("simrig.lambda_cloud._check_local_requirements"),
-                patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+                patch("simrig.remote._check_local_requirements"),
+                patch("simrig.remote.subprocess.run", return_value=completed) as run,
             ):
-                destination = fetch_lambda(
-                    LambdaSSHConfig("gpu.example"),
-                    "runs/cloud-run",
+                destination = fetch_remote(
+                    SSHConfig("gpu.example"),
+                    "runs/large-run",
                     local_output=local,
                 )
 
@@ -215,39 +240,41 @@ class LambdaCloudTests(unittest.TestCase):
             self.assertIn("--progress", command)
             self.assertNotIn("--info=progress2", command)
             self.assertIn(
-                "ubuntu@gpu.example:/home/ubuntu/simrig/runs/cloud-run/",
+                "ubuntu@gpu.example:/home/ubuntu/simrig/runs/large-run/",
                 command,
             )
 
-    def test_status_requires_policy_metrics_and_checkpoint(self) -> None:
+    def test_status_reads_progress_json_and_artifacts(self) -> None:
         completed = subprocess.CompletedProcess([], 0)
         with (
-            patch("simrig.lambda_cloud._check_local_requirements"),
-            patch("simrig.lambda_cloud.subprocess.run", return_value=completed) as run,
+            patch("simrig.remote._check_local_requirements"),
+            patch("simrig.remote.subprocess.run", return_value=completed) as run,
         ):
-            status_lambda(LambdaSSHConfig("gpu.example"), "runs/cloud-run")
+            status_remote(SSHConfig("gpu.example"), "runs/large-run")
 
         remote = run.call_args.args[0][-1]
         self.assertIn("policy.params", remote)
         self.assertIn("final_metrics.json", remote)
         self.assertIn("checkpoints", remote)
+        self.assertIn("progress.json", remote)
+        self.assertIn("run_manifest.json", remote)
         self.assertIn("artifacts=complete", remote)
 
     def test_private_key_permissions_must_not_be_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            key = Path(tmp) / "lambda.pem"
+            key = Path(tmp) / "id_ed25519"
             key.write_text("not-a-key", encoding="utf-8")
             key.chmod(0o644)
 
             with self.assertRaises(PermissionError):
                 _check_local_requirements(
-                    LambdaSSHConfig("gpu.example", identity=key),
+                    SSHConfig("gpu.example", identity=key),
                     commands=(),
                 )
 
     def test_private_key_must_parse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            key = Path(tmp) / "lambda.pem"
+            key = Path(tmp) / "id_ed25519"
             key.write_text("not-a-key", encoding="utf-8")
             key.chmod(0o600)
             invalid = subprocess.CompletedProcess(
@@ -256,12 +283,12 @@ class LambdaCloudTests(unittest.TestCase):
                 stderr="not a key file",
             )
             with (
-                patch("simrig.lambda_cloud.shutil.which", return_value="/usr/bin/ssh-keygen"),
-                patch("simrig.lambda_cloud.subprocess.run", return_value=invalid),
+                patch("simrig.remote.shutil.which", return_value="/usr/bin/ssh-keygen"),
+                patch("simrig.remote.subprocess.run", return_value=invalid),
                 self.assertRaises(ValueError),
             ):
                 _check_local_requirements(
-                    LambdaSSHConfig("gpu.example", identity=key),
+                    SSHConfig("gpu.example", identity=key),
                     commands=(),
                 )
 
