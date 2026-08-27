@@ -66,9 +66,16 @@ converged.
 
 ## Releases
 
-Maintainers should follow [docs/releasing.md](docs/releasing.md). Tagged
-releases are built once, published to PyPI with Trusted Publishing, and then
-attached to the corresponding GitHub Release.
+Bump `simrig/_version.py`, move notes out of `Unreleased` in `CHANGELOG.md`,
+and merge to `main` with CI green. Then tag and push:
+
+```bash
+git tag -a vX.Y.Z -m "SimRig X.Y.Z"
+git push origin vX.Y.Z
+```
+
+The tag must match the package version. GitHub Actions publishes to PyPI and
+creates the GitHub Release.
 
 ## Scope notes
 
