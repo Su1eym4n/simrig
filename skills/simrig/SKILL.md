@@ -278,8 +278,7 @@ simrig remote fetch HOST REMOTE_OUTPUT --identity KEY
 
 SimRig does not provision or terminate the machine. Fetch the complete run
 directory and remind the user to stop a billable VM after artifacts are safe.
-`--preset cloud` is a hidden alias for `large`; do not teach it. The old
-`simrig cloud lambda` command is gone.
+`--preset cloud` is a hidden alias for `large`; do not teach it.
 
 ### 7. Evaluate behavior, not only reward
 

@@ -1,4 +1,4 @@
-# Phase 1 independent-evaluation acceptance example
+# Independent-evaluation acceptance example
 
 This example is a dependency-free analytic two-link arm. It tests SimRig's
 evaluation architecture, not a training backend. The valid controller reaches

@@ -13,9 +13,9 @@
 - Write v2 `run_manifest.json` lifecycle records with contract identity,
   checkpoint lineage, bounded local source/XML/asset closure hashes, richer Git
   state, actual progress, GPU-hours, optional cost, and failure status.
-- Rename SSH training from `simrig cloud lambda` to `simrig remote`. The host
-  is any already-running Linux GPU over SSH, not a Lambda-only path. SimRig
-  still does not provision or stop machines.
+- Replace the old cloud SSH path with `simrig remote`. The host is any
+  already-running Linux GPU over SSH. SimRig still does not provision or stop
+  machines.
 - Rename the large PPO preset from `cloud` to `large`. `--preset large` is
   scale, not a remote launcher. `--preset cloud` remains a hidden alias, and
   old run `config.json` files that recorded `"preset": "cloud"` still load.
@@ -40,7 +40,7 @@
 - Strengthen the SimRig agent skill with a mandatory, user-confirmed Physical
   Success Definition gate before reward, termination, environment authoring, or
   training, including feasibility checks, counterexamples, controls, and
-  independent Phase 1 promotion evidence.
+  independent promotion evidence.
 
 ## 0.4.0 - 2026-08-17
 
@@ -68,7 +68,7 @@
 - Resolve registered MuJoCo Playground training from each task's tuned Brax PPO
   and network configuration while preserving SimRig's bounded smoke/local gates.
 - Add `--impl auto|jax|warp`, GPU-aware Warp fallback, reproducible `--seed`,
-  and opt-out domain randomization for local and Lambda training.
+  and opt-out domain randomization for local and remote training.
 - Record the resolved implementation, network, randomizer, source hashes, Git
   state, JAX devices, precision environment, and exact CLI overrides in every run.
 - Reconstruct recorded implementations and network layouts for eval, demo, and
@@ -78,12 +78,11 @@
 
 ## 0.3.0 - 2026-08-01
 
-- Add an SSH-based Lambda On-Demand Cloud workflow with connection and GPU
-  checks, project sync/setup, remote smoke and PPO training, detached-run
-  status, and run-artifact download.
-- Add a Lambda GPU operations guide covering SSH keys, persistent storage,
-  smoke-before-cloud gates, port forwarding, and instance shutdown.
-- Pin the Playground training stack and require Python 3.11+ during Lambda
+- Add an SSH GPU workflow with connection and GPU checks, project sync/setup,
+  remote smoke and PPO training, detached-run status, and run-artifact download.
+- Add a remote GPU operations guide covering SSH keys, persistent storage,
+  smoke-before-scale gates, port forwarding, and stopping billable VMs.
+- Pin the Playground training stack and require Python 3.11+ during remote
   preparation instead of silently resolving an older environment on Python
   3.10.
 - Record Python and package versions in every training run and refuse eval,
@@ -93,7 +92,7 @@
   fail closed when port forwarding cannot be established, and support older
   macOS `rsync` clients.
 - Require the final policy, metrics, and checkpoint artifacts before reporting
-  a detached Lambda run as completed; fetched runs now include a shutdown-cost
+  a detached remote run as completed; fetched runs now include a shutdown-cost
   reminder.
 - Evaluation results distinguish rollout completion from task success and state
   clearly when no task-specific success evaluator is configured.

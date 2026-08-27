@@ -21,10 +21,9 @@ Protect the private key:
 chmod 400 ~/.ssh/id_ed25519
 ```
 
-Lambda On-Demand, OCI, AWS, GCP, and a desktop under the desk are all the same
-CLI. If the image already has JAX+CUDA (Lambda Stack, some NGC images), keep
-the default `--jax-cuda preinstalled`. Otherwise pass `--jax-cuda cuda12` or
-`cuda13` after checking the driver.
+A cloud VM, a lab box, and a desktop under the desk are the same CLI. If the
+image already has JAX+CUDA, keep the default `--jax-cuda preinstalled`.
+Otherwise pass `--jax-cuda cuda12` or `cuda13` after checking the driver.
 
 ## 2. Establish SSH and check the GPU
 
@@ -120,10 +119,10 @@ Compilation, device visibility, and smoke success do not prove the requested
 behavior has been learned. Inspect the metrics and evaluate the smoke
 checkpoint before spending on a larger run.
 
-If the request is a sequence of skills (throw then catch, walk then jump),
-smoke and train primitive envs first. Do not start a detached `--preset large`
-run on a composed circus skill until those primitives work, or the user
-explicitly wants one policy.
+If the user wants several behaviors (walk and jump, reach then hold), smoke
+and train each primitive env first. Do not start a detached `--preset large`
+run on a composed task until those primitives work, or the user explicitly
+wants one policy.
 
 ## 5. Start and monitor a large run
 
@@ -212,4 +211,3 @@ billable VM in its cloud console. SimRig does not stop it.
 | JAX reports only CPU | Recreate the venv with `prepare`; inspect JAX/CUDA vs the driver |
 | PPO runs out of memory | Reduce `--num-envs` and `--batch-size` |
 | Detached run says `stopped` | Inspect `train.log`, fix the earliest error, and rerun the failed gate |
-| `simrig cloud lambda` is unknown | That command was removed. Use `simrig remote`. `--preset cloud` still aliases `--preset large` |

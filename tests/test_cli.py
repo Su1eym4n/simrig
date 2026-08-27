@@ -461,7 +461,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.preset, "large")
 
-    def test_cloud_lambda_command_is_removed(self) -> None:
+    def test_legacy_cloud_subcommand_is_removed(self) -> None:
         parser = build_parser()
 
         with self.assertRaises(SystemExit):

@@ -103,7 +103,7 @@ semantics are understood.
 
 ### Confirmation and task contract
 
-Map the confirmed definition into Phase 1 contract fields: behavior,
+Map the confirmed definition into task-contract fields: behavior,
 interfaces, scene contacts, reset, episode horizon, physical outcomes,
 evaluator, predicates, scenario/seed suites, promotion requirements, and
 compute limits. Keep an explicit list of unresolved assumptions.

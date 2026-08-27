@@ -1,6 +1,7 @@
 # Examples
 
-Tiny assets for testing SimRig’s **custom env CLI path** — not product tasks.
+Tiny assets for testing SimRig's **custom env CLI path** and independent
+evaluation — not product tasks.
 
 ## demo_reach
 
@@ -67,3 +68,18 @@ The policy completed the full 1,000-step horizon without termination for seeds
 requires a JAX-visible CUDA GPU and MuJoCo Warp. Use
 `--allow-runtime-mismatch` only for a qualitative preview when the local Python
 or package versions differ from the recorded configuration.
+
+## Independent evaluation (planar arm)
+
+[`phase1/`](phase1/README.md) is a dependency-free analytic two-link arm. It
+tests SimRig's evaluator, predicates, and ranking — not a training backend.
+The valid controller passes; a high-reward trap fails forbidden-contact
+predicates and ranks last.
+
+```bash
+simrig task validate examples/phase1/planar_reach_task.json
+simrig task freeze examples/phase1/planar_reach_task.json \
+  --output /tmp/planar-reach.frozen.json
+simrig eval-suite examples/phase1/checkpoints/valid.json \
+  --contract /tmp/planar-reach.frozen.json --suite promotion
+```

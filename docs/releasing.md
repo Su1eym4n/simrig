@@ -39,12 +39,12 @@ long-lived PyPI API token in GitHub.
    ```bash
    git switch main
    git pull --ff-only
-   git tag -a v0.3.0 -m "SimRig 0.3.0"
-   git push origin v0.3.0
+   git tag -a v0.4.0 -m "SimRig 0.4.0"
+   git push origin v0.4.0
    ```
 
-5. Watch the **Release** workflow. It should publish `simrig==0.2.2` to PyPI
-   and create the `v0.2.2` GitHub Release automatically.
+5. Watch the **Release** workflow. It should publish `simrig==0.4.0` to PyPI
+   and create the `v0.4.0` GitHub Release automatically.
 
 If a job fails after the PyPI upload, correct the external configuration and
 rerun the failed jobs. Publishing is configured to skip an artifact version

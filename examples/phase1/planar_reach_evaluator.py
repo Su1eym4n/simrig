@@ -1,4 +1,4 @@
-"""Independent analytic evaluator used to acceptance-test SimRig Phase 1."""
+"""Independent analytic evaluator used to acceptance-test SimRig evaluation."""
 
 from __future__ import annotations
 

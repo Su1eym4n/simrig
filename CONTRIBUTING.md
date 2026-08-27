@@ -5,12 +5,12 @@ trainability, and useful for both humans and coding agents.
 
 ## Development setup
 
-Use Python 3.10 or newer in an isolated environment:
+Use Python 3.11 or newer in an isolated environment:
 
 ```bash
 git clone https://github.com/Su1eym4n/simrig.git
 cd simrig
-python3.12 -m venv .venv  # or another installed Python >= 3.10
+python3.12 -m venv .venv  # or another installed Python >= 3.11
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
@@ -72,6 +72,6 @@ attached to the corresponding GitHub Release.
 
 ## Scope notes
 
-- v0.1 first-class path: existing MuJoCo Playground environments.
+- Preferred path: existing MuJoCo Playground environments.
 - Custom envs: `new-env`, `validate-env` / `--runtime`, and smoke/train via `*.py` module paths.
 - Isaac Lab and other heavy backends are out of scope until explicitly planned.
