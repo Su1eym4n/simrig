@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-31
+
+### Compatibility and scope
+
+- Evaluation-suite reports now use schema v2. Do not rank them with older
+  reports; rerun evaluation with complete metric/event/contact evidence.
+- Learned rollouts verify recorded environment source and model identities.
+  Checkpoints trained against the old reaching environment must not silently
+  run against its corrected source. Reproduce their original environment or
+  train a new policy on the corrected environment.
+- Shared policy playback currently supports `action_repeat=1`; other control
+  rates fail explicitly. GPU vision and native desktop playback were not
+  validated by the new CPU reaching reference.
+- The learned reaching reference demonstrates training, independent evaluation,
+  and preview, but both learned and random controls pass its 24 arrival cases.
+  Its verifier therefore fails the baseline-discrimination expectation. This
+  release does not claim a demanding manipulation skill or hardware readiness.
+- Task/reward design remains agent-owned. Reward probes analyze existing
+  reports; they do not automatically search for new exploits.
+
+### Changes
+
 - Show green success, red failure, or neutral unknown outcomes in policy previews
   using environment success metrics. Keep episode completion separate from task
   success, and replace survival wording with neutral step counts.
@@ -49,7 +71,7 @@
 - Add generic event, sustained-signal, metric, sequence, and contact predicates
   with a stable machine-readable terminal failure taxonomy.
 - Add per-condition promotion reports, coverage-failing bounded checkpoint
-  evaluation, reward adversarial probes, and reward-independent checkpoint
+  evaluation, report-based reward probes, and reward-independent checkpoint
   ranking.
 - Add explicit task-contract schema migration and purpose-specific exact,
   training-resume, checkpoint-evaluation, and result-comparison policies.
