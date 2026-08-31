@@ -26,23 +26,32 @@ rewards, resets, termination conditions, validation, training, and evaluation.
 
 ## From prompt to simulation
 
-### Train Go1 through a smoke-gated remote GPU workflow
+### Exchange a ball between two Franka Panda arms
 
-SimRig prepares the existing Go1 locomotion environment and runs local smoke
-tests before requesting SSH details for another Linux GPU. The large run
-starts only after that handoff. The recorded result below shows the trained
-checkpoint downloaded and running in SimRig's interactive browser preview.
+This complete A→B→A exchange combines three explicit control sources: a
+recorded expert actuator sequence drives each real-physics throw, a learned
+catcher closes on the arriving ball, and a scripted controller carries the
+caught ball back to the mirrored throwing pose. The ball is neither teleported
+nor given a scripted flight velocity in this mode. The recording shows seed 0:
+both throws were caught, with 6 mm closest approach to the receiving palm.
+
+This is a qualitative mixed-controller demonstration, not an end-to-end learned
+exchange or a broad success-rate claim. The catch checkpoints were replayed
+under an explicitly allowed runtime mismatch. The source demo's own evaluation
+still treats catching learned throws and retaining the ball through return as
+unsolved.
 
 <details>
 <summary><strong>Prompt</strong></summary>
 
-> Prepare the full Go1 robot training setup and run local smoke tests to verify
-> everything works. Once the tests pass, ask me for SSH details for an
-> already-running Linux GPU before starting the large training run.
+> Run the dual-Panda ball exchange through one complete A→B→A cycle and record
+> it for the README. Use real MuJoCo flight, label which parts are learned,
+> replayed, and scripted, and do not present one successful recording as an
+> independently validated end-to-end policy.
 
 </details>
 
-<img src="assets/go1-training.gif" alt="Codex running a smoke-gated Go1 training workflow and previewing the trained policy in SimRig" width="100%">
+<img src="assets/dual-panda-exchange.gif" alt="Two Franka Panda arms completing an A to B to A ball exchange using expert throw replay, learned catching, and scripted restow" width="100%">
 
 ### Trace a five-pointed star with Franka Panda
 
