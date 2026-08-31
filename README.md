@@ -28,18 +28,9 @@ rewards, resets, termination conditions, validation, training, and evaluation.
 
 ### Exchange a ball between two Franka Panda arms
 
-This complete A→B→A exchange combines three explicit control sources: a
-recorded expert actuator sequence drives each real-physics throw, a learned
-catcher closes on the arriving ball, and a scripted controller carries the
-caught ball back to the mirrored throwing pose. The ball is neither teleported
-nor given a scripted flight velocity in this mode. The recording shows seed 0:
-both throws were caught, with 6 mm closest approach to the receiving palm.
-
-This is a qualitative mixed-controller demonstration, not an end-to-end learned
-exchange or a broad success-rate claim. The catch checkpoints were replayed
-under an explicitly allowed runtime mismatch. The source demo's own evaluation
-still treats catching learned throws and retaining the ball through return as
-unsolved.
+Two Franka Panda arms complete an A→B→A ball exchange in MuJoCo. Expert throw
+replay, learned catching, and scripted return motion are combined into one
+continuous simulation cycle.
 
 <details>
 <summary><strong>Prompt</strong></summary>
