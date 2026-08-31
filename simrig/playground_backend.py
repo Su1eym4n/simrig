@@ -35,14 +35,14 @@ from simrig.presets import (
     apply_preset_scale,
     canonical_preset,
     checkpoint_config,
+    checkpoint_config_path,
     legacy_network_factory,
     preset,
-    resolve_network_factory,
     resolve_network_type,
 )
 from simrig.progress import maybe_tensorboard_writer, record_progress
 from simrig.run_manifest import finish_run_manifest, start_run_manifest
-from simrig.runtime import runtime_manifest, training_provenance, verify_checkpoint_runtime
+from simrig.runtime import runtime_manifest, training_provenance
 from simrig.success import collect_success_value, evaluate_task_success, load_success_spec
 from simrig.task_contract import (
     AbortMonitor,
@@ -531,7 +531,11 @@ def smoke_env(
     seed: int = 0,
 ) -> SmokeResult:
     """Run a short reset/zero-action step test."""
+    from simrig.rollout import validate_state
+
     _validate_backend(backend)
+    if type(steps) is not int or steps < 1:
+        raise ValueError("steps must be a positive integer")
     label = resolve_env_label(env_name)
     jax, jp, *_ = _import_training_deps()
     try:
@@ -550,9 +554,14 @@ def smoke_env(
         reset = jax.jit(env.reset)
         step = jax.jit(env.step)
         state = reset(jax.random.PRNGKey(seed))
+        validate_state(state, env.observation_size)
         completed = 0
         for completed in range(1, steps + 1):
+            if bool(state.done):
+                state = reset(jax.random.fold_in(jax.random.PRNGKey(seed), completed))
+                validate_state(state, env.observation_size)
             state = step(state, jp.zeros(env.action_size))
+            validate_state(state, env.observation_size)
         return SmokeResult(
             env_name=label,
             backend=backend,
@@ -657,12 +666,14 @@ def train_ppo(
                     else None
                 ),
             )
-            evaluator_manifest = load_evaluator(
+            loaded_evaluator = load_evaluator(
                 plugin_path,
                 config=evaluator_decl.get("config")
                 if isinstance(evaluator_decl.get("config"), Mapping)
                 else None,
-            ).manifest
+            )
+            evaluator_manifest = loaded_evaluator.manifest
+            loaded_evaluator.close()
             config["evaluator"] = evaluator_manifest
     if restore_checkpoint_path is not None and resume_run_dir is not None:
         resume_compatibility = _verify_resume_compatibility(
@@ -1073,54 +1084,34 @@ def eval_policy(
     allow_runtime_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Headless deterministic policy rollout."""
-    _validate_backend(backend)
-    runtime = verify_checkpoint_runtime(
-        checkpoint,
-        allow_mismatch=allow_runtime_mismatch,
+    from simrig.rollout import PolicyRuntime
+    from simrig.evaluation_suite import artifact_sha256
+
+    if type(steps) is not int or steps < 1:
+        raise ValueError("steps must be a positive integer")
+    rollout = PolicyRuntime(
+        checkpoint, env_name=env_name, backend=backend, small_network=small_network,
+        allow_runtime_mismatch=allow_runtime_mismatch,
     )
-    _ensure_checkpoint_vision_runtime(checkpoint)
-    jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
-    env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
-    network_config = resolve_network_factory(checkpoint, small_network=small_network)
-    network_factory = make_network_factory(
-        resolve_network_type(checkpoint),
-        network_config,
-        ppo_networks=ppo_networks,
-    )
-    networks = network_factory(
-        env.observation_size,
-        env.action_size,
-        preprocess_observations_fn=running_statistics.normalize,
-    )
-    params = brax_model.load_params(str(checkpoint))
-    policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
-    reset = jax.jit(env.reset)
-    step = jax.jit(env.step)
-    rng = jax.random.PRNGKey(seed)
-    state = reset(rng)
-    command_applied = False
-    if command is not None:
-        state, command_applied = _apply_command(env, state, jp.asarray(command))
-        if not command_applied:
-            raise ValueError(
-                f"Environment {resolve_env_label(env_name)} does not expose command-like state."
-            )
+    env = rollout.env
+    state, rng = rollout.reset(seed)
+    state = rollout.apply_command(state, command)
+    command_applied = command is not None
     total_reward = 0.0
     completed = 0
     success_spec = load_success_spec(env_name, env)
     success_values: list[float] = []
-    for completed in range(1, steps + 1):
-        if command is not None:
-            state, command_applied = _apply_command(env, state, jp.asarray(command))
-        rng, action_rng = jax.random.split(rng)
-        action, _ = policy(state.obs, action_rng)
-        state = step(state, action)
-        total_reward += float(state.reward)
-        sample = collect_success_value(state, success_spec or None)
-        if sample is not None:
-            success_values.append(sample)
-        if bool(state.done):
-            break
+    try:
+        for completed in range(1, steps + 1):
+            state, rng, _ = rollout.advance(state, rng, command=command)
+            total_reward += float(state.reward)
+            sample = collect_success_value(state, success_spec or None)
+            if sample is not None:
+                success_values.append(sample)
+            if bool(state.done):
+                break
+    finally:
+        rollout.close()
     completed_requested_steps = completed == steps and not bool(state.done)
     task_success, task_success_reason = evaluate_task_success(
         success_values,
@@ -1129,7 +1120,13 @@ def eval_policy(
     return {
         "env_name": resolve_env_label(env_name),
         "backend": backend,
-        "checkpoint": str(checkpoint),
+        "checkpoint": str(rollout.checkpoint),
+        "checkpoint_sha256": artifact_sha256(rollout.checkpoint),
+        "checkpoint_config_sha256": (
+            artifact_sha256(checkpoint_config_path(rollout.checkpoint))
+            if checkpoint_config_path(rollout.checkpoint).is_file() else None
+        ),
+        "environment": env_name,
         "seed": seed,
         "command": list(command) if command is not None else None,
         "command_applied": command_applied,
@@ -1141,7 +1138,7 @@ def eval_policy(
         "completed_requested_steps": completed_requested_steps,
         "task_success": task_success,
         "task_success_reason": task_success_reason,
-        "runtime_compatibility": runtime,
+        "runtime_compatibility": rollout.runtime_compatibility,
     }
 
 
@@ -1159,10 +1156,12 @@ def demo_policy(
     allow_runtime_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Run a trained policy in a desktop MuJoCo viewer."""
-    _validate_backend(backend)
-    verify_checkpoint_runtime(checkpoint, allow_mismatch=allow_runtime_mismatch)
-    _ensure_checkpoint_vision_runtime(checkpoint)
-    jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
+    from simrig.rollout import PolicyRuntime
+
+    rollout = PolicyRuntime(
+        checkpoint, env_name=env_name, backend=backend, small_network=small_network,
+        allow_runtime_mismatch=allow_runtime_mismatch,
+    )
     try:
         import mujoco  # type: ignore
         from gymnasium.envs.mujoco.mujoco_rendering import WindowViewer  # type: ignore
@@ -1171,27 +1170,10 @@ def demo_policy(
             "Interactive demo requires MuJoCo and Gymnasium's MuJoCo viewer."
         ) from exc
 
-    env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
-    network_config = resolve_network_factory(checkpoint, small_network=small_network)
-    network_factory = make_network_factory(
-        resolve_network_type(checkpoint),
-        network_config,
-        ppo_networks=ppo_networks,
-    )
-    networks = network_factory(
-        env.observation_size,
-        env.action_size,
-        preprocess_observations_fn=running_statistics.normalize,
-    )
-    params = brax_model.load_params(str(checkpoint))
-    policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
-    reset = jax.jit(env.reset)
-    step = jax.jit(env.step)
-    rng = jax.random.PRNGKey(seed)
-    state = reset(rng)
-    command_applied = False
-    if command is not None:
-        state, command_applied = _apply_command(env, state, jp.asarray(command))
+    env = rollout.env
+    state, rng = rollout.reset(seed)
+    state = rollout.apply_command(state, command)
+    command_applied = command is not None
 
     mj_data = mujoco.MjData(env.mj_model)
     viewer = WindowViewer(env.mj_model, mj_data, width=None, height=None, max_geom=1000)
@@ -1202,11 +1184,7 @@ def demo_policy(
     completed = 0
     try:
         for completed in range(1, steps + 1):
-            if command is not None:
-                state, command_applied = _apply_command(env, state, jp.asarray(command))
-            rng, action_rng = jax.random.split(rng)
-            action, _ = policy(state.obs, action_rng)
-            state = step(state, action)
+            state, rng, _ = rollout.advance(state, rng, command=command)
             total_reward += float(state.reward)
 
             mj_data.qpos = state.data.qpos
@@ -1225,6 +1203,7 @@ def demo_policy(
                 break
     finally:
         viewer.close()
+        rollout.close()
 
     return {
         "env_name": resolve_env_label(env_name),

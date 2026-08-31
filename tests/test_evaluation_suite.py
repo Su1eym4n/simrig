@@ -32,6 +32,19 @@ def _frozen_contract(tmp: str, source: Path = EXAMPLE / "planar_reach_task.json"
 
 
 class EvaluationSuiteTests(unittest.TestCase):
+    def test_run_directory_hash_identifies_policy_not_unrelated_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            contract = _frozen_contract(tmp)
+            (root / "policy.params").write_text(json.dumps({"controller": "valid"}))
+            before = run_evaluation_suite(root, contract_path=contract, suite_name="promotion")
+            (root / "progress.json").write_text('{"steps": 100}')
+            after = run_evaluation_suite(root, contract_path=contract, suite_name="promotion")
+        self.assertTrue(before["passed"])
+        self.assertTrue(after["passed"])
+        self.assertEqual(before["checkpoint"]["sha256"], after["checkpoint"]["sha256"])
+        self.assertTrue(before["checkpoint"]["path"].endswith("policy.params"))
+
     def test_planar_reach_acceptance_and_reward_trap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             contract = _frozen_contract(tmp)

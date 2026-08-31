@@ -17,12 +17,13 @@ from simrig.evaluator import (
 from simrig.failures import SAFETY_FAILURE_CATEGORIES
 from simrig.gates import adversarial_reward_probes, evaluate_gate
 from simrig.task_contract import load_task_contract
-from simrig.io import save_json, slugify
+from simrig.io import save_json, unique_report_path
+from simrig.presets import checkpoint_config_path
 from simrig.run_manifest import record_independent_evaluation
 from simrig.task_contract import validate_task_contract
 
 
-EVALUATION_REPORT_SCHEMA_VERSION = 1
+EVALUATION_REPORT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class EvaluationLimits:
 
     def validate(self) -> None:
         for name, value in self.__dict__.items():
-            if value is not None and (not isinstance(value, int) or value < 1):
+            if value is not None and (type(value) is not int or value < 1):
                 raise ValueError(f"{name} must be a positive integer or null")
 
 
@@ -82,62 +83,85 @@ def run_evaluation_suite(
         contract_path=frozen_path,
         source_path=source_path,
     )
-    evaluator = load_evaluator(
-        plugin_path,
-        config=evaluator_decl.get("config")
-        if isinstance(evaluator_decl.get("config"), Mapping)
-        else None,
-    )
     active_limits = limits or EvaluationLimits()
     active_limits.validate()
     scenarios = list(suite.get("scenarios") or [])
     if active_limits.max_scenarios is not None:
         scenarios = scenarios[: active_limits.max_scenarios]
     environment = contract.get("environment") or {}
+    environment_ref = str(environment.get("ref"))
+    if environment_ref.endswith(".py"):
+        environment_ref = str(resolve_evaluator_path(
+            environment_ref, contract_path=frozen_path, source_path=source_path,
+        ))
     episode = contract.get("episode") or {}
     common_predicates = _predicate_list(
         evaluation.get("predicates") if isinstance(evaluation, Mapping) else None
     )
     suite_predicates = _predicate_list(suite.get("predicates"))
     checkpoint_ref = _checkpoint_ref(checkpoint)
+    checkpoint_hash = artifact_sha256(checkpoint_ref)
+    config_path = checkpoint_config_path(checkpoint_ref)
+    config_hash = artifact_sha256(config_path) if config_path.is_file() else None
     records: list[dict[str, Any]] = []
     stopped_by_limit = False
-    for scenario in scenarios:
-        if not isinstance(scenario, Mapping):
-            continue
-        seeds = list(scenario.get("seeds") or [])
-        if active_limits.max_seeds_per_scenario is not None:
-            seeds = seeds[: active_limits.max_seeds_per_scenario]
-        for seed in seeds:
-            if (
-                active_limits.max_evaluations is not None
-                and len(records) >= active_limits.max_evaluations
-            ):
-                stopped_by_limit = True
+    evaluator = load_evaluator(
+        plugin_path,
+        config=evaluator_decl.get("config")
+        if isinstance(evaluator_decl.get("config"), Mapping)
+        else None,
+    )
+    try:
+        for scenario in scenarios:
+            if not isinstance(scenario, Mapping):
+                continue
+            seeds = list(scenario.get("seeds") or [])
+            if active_limits.max_seeds_per_scenario is not None:
+                seeds = seeds[: active_limits.max_seeds_per_scenario]
+            for seed in seeds:
+                if (
+                    active_limits.max_evaluations is not None
+                    and len(records) >= active_limits.max_evaluations
+                ):
+                    stopped_by_limit = True
+                    break
+                request = EvaluationRequest(
+                    checkpoint=checkpoint_ref,
+                    environment=environment_ref,
+                    backend=str(environment.get("backend")),
+                    suite=suite_name,
+                    scenario=str(scenario.get("name")),
+                    parameters=dict(scenario.get("parameters") or {}),
+                    seed=int(seed),
+                    max_steps=int(
+                        scenario.get("max_steps")
+                        or suite.get("max_steps")
+                        or episode.get("horizon_steps")
+                    ),
+                    task_contract_sha256=str(envelope["sha256"]),
+                )
+                predicates = (
+                    common_predicates
+                    + suite_predicates
+                    + _predicate_list(scenario.get("predicates"))
+                )
+                records.append(run_evaluator(evaluator, request, predicates=predicates))
+            if stopped_by_limit:
                 break
-            request = EvaluationRequest(
-                checkpoint=checkpoint_ref,
-                environment=str(environment.get("ref")),
-                backend=str(environment.get("backend")),
-                suite=suite_name,
-                scenario=str(scenario.get("name")),
-                parameters=dict(scenario.get("parameters") or {}),
-                seed=int(seed),
-                max_steps=int(
-                    scenario.get("max_steps")
-                    or suite.get("max_steps")
-                    or episode.get("horizon_steps")
-                ),
-                task_contract_sha256=str(envelope["sha256"]),
-            )
-            predicates = (
-                common_predicates
-                + suite_predicates
-                + _predicate_list(scenario.get("predicates"))
-            )
-            records.append(run_evaluator(evaluator, request, predicates=predicates))
-        if stopped_by_limit:
-            break
+    finally:
+        evaluator.close()
+
+    if artifact_sha256(checkpoint_ref) != checkpoint_hash:
+        raise ValueError("Checkpoint changed during evaluation; results cannot identify one policy")
+    if config_hash is not None and artifact_sha256(config_path) != config_hash:
+        raise ValueError("Checkpoint configuration changed during evaluation")
+    for record in records:
+        record["evaluator_sha256"] = evaluator.manifest["sha256"]
+        record["checkpoint_sha256"] = checkpoint_hash
+        record["checkpoint_config_sha256"] = config_hash
+        record["task_contract_sha256"] = str(envelope["sha256"])
+        record["suite"] = suite_name
+        record["record_sha256"] = _mapping_sha256(record)
 
     gate = evaluate_gate(contract, suite_name=suite_name, records=records)
     reward_probes = adversarial_reward_probes(records)
@@ -152,7 +176,8 @@ def run_evaluation_suite(
         "evaluator": evaluator.manifest,
         "checkpoint": {
             "path": checkpoint_ref,
-            "sha256": artifact_sha256(checkpoint),
+            "sha256": checkpoint_hash,
+            "config_sha256": config_hash,
         },
         "suite": suite_name,
         "bounded": any(value is not None for value in active_limits.__dict__.values()),
@@ -206,7 +231,7 @@ def evaluate_checkpoint_directory(
             evaluator_path=evaluator_path,
             limits=limits or EvaluationLimits(max_scenarios=1, max_seeds_per_scenario=1),
         )
-        path = output_dir / f"{slugify(checkpoint.name)}-{slugify(suite_name)}.json"
+        path = unique_report_path(f"{checkpoint.name}-{suite_name}", root=output_dir)
         save_json(path, report)
         reports.append(report)
         report_paths.append(str(path))
@@ -289,9 +314,10 @@ def artifact_sha256(path: Path | str, *, max_files: int = 512) -> str:
         digest.update(target.read_bytes())
         return digest.hexdigest()
     if not target.is_dir():
-        digest.update(str(target).encode("utf-8"))
-        return digest.hexdigest()
-    files = sorted(item for item in target.rglob("*") if item.is_file())[:max_files]
+        raise FileNotFoundError(f"Evaluation artifact not found: {target}")
+    files = sorted(item for item in target.rglob("*") if item.is_file())
+    if len(files) > max_files:
+        raise ValueError(f"Artifact exceeds the complete hashing limit of {max_files} files: {target}")
     for item in files:
         digest.update(str(item.relative_to(target)).encode("utf-8"))
         with item.open("rb") as handle:
@@ -305,6 +331,8 @@ def _checkpoint_ref(value: Path | str) -> str:
     if "://" in text:
         return text
     path = Path(text).expanduser()
+    if path.is_dir() and (path / "policy.params").is_file():
+        path = path / "policy.params"
     return str(path.resolve()) if path.exists() else text
 
 

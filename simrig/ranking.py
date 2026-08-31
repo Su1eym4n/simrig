@@ -45,13 +45,14 @@ def rank_checkpoints(reports: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             _nested(report, "task_contract", "sha256"),
             _nested(report, "evaluator", "sha256"),
             report.get("suite"),
+            report.get("schema_version"),
         )
         for report in items
     }
     if len(identities) != 1:
         raise ValueError(
-            "Checkpoint reports are not comparable: contract, evaluator, and suite "
-            "hashes must match."
+            "Checkpoint reports are not comparable: contract hash, evaluator hash, "
+            "suite, and report schema must match."
         )
     scored = [_score_report(report) for report in items]
     scored.sort(

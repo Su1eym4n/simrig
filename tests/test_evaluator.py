@@ -9,6 +9,44 @@ from simrig.evaluator import EvaluationRequest, load_evaluator, run_evaluator
 
 
 class EvaluatorPluginTests(unittest.TestCase):
+    def test_nonfinite_metrics_and_malformed_events_fail_closed(self):
+        for raw in (
+            "{'metrics': {'distance': float('nan')}}",
+            "{'events': [{'name': 'hit', 'step': 0, 'active': 'false'}]}",
+            "{'events': [{'name': 'hit', 'step': 999}]}"
+        ):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "evaluator.py"
+                path.write_text("EVALUATOR_SPEC={'name':'test','version':'1'}\ndef evaluate(request):\n    return " + raw)
+                result = run_evaluator(
+                    load_evaluator(path),
+                    EvaluationRequest("policy", "Task", "test", "nominal", "nominal", {}, 0, 10, "hash"),
+                    predicates=[],
+                )
+                self.assertFalse(result["task_success"])
+                self.assertEqual(result["terminal_reason"]["category"], "evaluator_error")
+
+    def test_factory_reuses_state_and_exposes_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "evaluator.py"
+            path.write_text(textwrap.dedent('''
+                EVALUATOR_SPEC = {"name": "factory", "version": "1"}
+                class Evaluator:
+                    calls = 0
+                    def evaluate(self, request):
+                        self.calls += 1
+                        return {"metrics": {"calls": self.calls}}
+                    def close(self):
+                        self.calls = -1
+                def make_evaluator(config):
+                    return Evaluator()
+            '''))
+            evaluator = load_evaluator(path)
+            self.assertEqual(evaluator.evaluate({})["metrics"]["calls"], 1)
+            self.assertEqual(evaluator.evaluate({})["metrics"]["calls"], 2)
+            evaluator.close()
+            self.assertEqual(evaluator.evaluate({})["metrics"]["calls"], 0)
+
     def test_evaluator_hash_includes_source_and_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "evaluator.py"

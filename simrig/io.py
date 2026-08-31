@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from simrig.core import report_markdown, to_dict
 
@@ -31,6 +32,11 @@ def save_json(path: Path | str, value: Any) -> Path:
     return output
 
 
+def unique_report_path(name: str, *, root: Path | str = "reports") -> Path:
+    """Preserve repeated trials, including multiple checkpoints with the same name."""
+    return Path(root) / f"{slugify(name)}-{timestamp()}-{uuid4().hex[:12]}.json"
+
+
 def save_report_pair(
     report: Any,
     *,
@@ -46,4 +52,3 @@ def save_report_pair(
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(report_markdown(title, report), encoding="utf-8")
     return md_path, json_path
-

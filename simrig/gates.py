@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 import json
+import hashlib
 import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from simrig.failures import SAFETY_FAILURE_CATEGORIES
 
 
 def load_evaluation_records(paths: Iterable[Path | str]) -> list[dict[str, Any]]:
@@ -18,6 +21,12 @@ def load_evaluation_records(paths: Iterable[Path | str]) -> list[dict[str, Any]]
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise ValueError(f"Evaluation report must be JSON: {path}: {exc}") from exc
+        if isinstance(payload, Mapping) and payload.get("report_sha256"):
+            canonical = dict(payload)
+            recorded_hash = canonical.pop("report_sha256")
+            actual_hash = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if recorded_hash != actual_hash:
+                raise ValueError(f"Evaluation report hash mismatch: {path}")
         items: Any = payload
         if isinstance(payload, Mapping):
             for key in ("episodes", "records", "results"):
@@ -64,7 +73,26 @@ def evaluate_gate(
             requirement_results.append(
                 _evaluate_requirement(requirement, group, group_records)
             )
-    passed = bool(normalized) and coverage["passed"] and all(
+    invalid_records = [
+        index for index, record in enumerate(normalized)
+        if isinstance(record.get("terminal_reason"), Mapping)
+        and record["terminal_reason"].get("category") in (SAFETY_FAILURE_CATEGORIES | {"incomplete", "unknown"})
+    ]
+    identity_errors = []
+    for key in ("checkpoint_sha256", "checkpoint_config_sha256", "evaluator_sha256", "task_contract_sha256", "suite", "environment"):
+        values = {str(record[key]) for record in normalized if record.get(key) is not None}
+        if len(values) > 1:
+            identity_errors.append(f"Reports mix different {key} values")
+        if values and any(record.get(key) is None for record in normalized):
+            identity_errors.append(f"Some records lack {key}")
+    from simrig.task_contract import contract_sha256
+
+    expected_contract_hash = contract_sha256(contract)
+    if any(record.get("task_contract_sha256") not in (None, expected_contract_hash) for record in normalized):
+        identity_errors.append("Reports belong to a different task contract")
+    if any(record.get("suite") not in (None, suite_name) for record in normalized):
+        identity_errors.append("Reports belong to a different suite")
+    passed = bool(normalized) and not identity_errors and not invalid_records and coverage["passed"] and all(
         item["passed"] for item in requirement_results
     )
     return {
@@ -73,6 +101,8 @@ def evaluate_gate(
         "records": len(normalized),
         "group_by": list(group_keys),
         "coverage": coverage,
+        "invalid_records": invalid_records,
+        "identity_errors": identity_errors,
         "requirements": requirement_results,
     }
 
@@ -200,17 +230,22 @@ def _scenario_coverage(
             name = str(scenario.get("name"))
             for seed in scenario.get("seeds") or []:
                 expected.add((name, int(seed)))
-    observed = {
+    cells = [
         (str(record.get("scenario")), int(record["seed"]))
         for record in records
-        if record.get("scenario") is not None and isinstance(record.get("seed"), int)
-    }
+        if record.get("scenario") is not None and type(record.get("seed")) is int
+    ]
+    observed = set(cells)
+    duplicates = sorted(cell for cell in observed if cells.count(cell) > 1)
+    unexpected = sorted(observed - expected) if expected else []
     missing = sorted(expected - observed)
     return {
-        "passed": not missing,
+        "passed": not missing and not duplicates and not unexpected and len(cells) == len(records),
         "expected": len(expected),
         "observed": len(expected & observed),
         "missing": [{"scenario": name, "seed": seed} for name, seed in missing],
+        "duplicates": [{"scenario": name, "seed": seed} for name, seed in duplicates],
+        "unexpected": [{"scenario": name, "seed": seed} for name, seed in unexpected],
     }
 
 
@@ -242,7 +277,8 @@ def _evaluate_requirement(
     actual = _aggregate(values, aggregate)
     operator = str(requirement.get("operator", ">="))
     expected = float(requirement.get("value"))
-    passed = actual is not None and _compare(actual, operator, expected)
+    missing_samples = len(filtered) - len(values)
+    passed = not missing_samples and actual is not None and _compare(actual, operator, expected)
     return {
         "metric": metric,
         "group": list(group),
@@ -252,9 +288,11 @@ def _evaluate_requirement(
         "expected": expected,
         "actual": actual,
         "samples": len(values),
+        "missing_samples": missing_samples,
         "passed": passed,
         "reason": (
-            f"{aggregate}({metric})={actual:g} {operator} {expected:g}"
+            f"{missing_samples} required sample(s) lack finite metric {metric!r}"
+            if missing_samples else f"{aggregate}({metric})={actual:g} {operator} {expected:g}"
             if actual is not None
             else f"metric {metric!r} had no numeric samples"
         ),

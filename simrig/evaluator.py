@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from simrig.failures import FailureCategory, terminal_reason
 from simrig.predicates import apply_predicates
 from simrig.runtime import source_closure_manifest
+from simrig.rollout import InvalidRolloutState
 
 
 EVALUATOR_PROTOCOL_VERSION = 1
@@ -49,6 +50,7 @@ class LoadedEvaluator:
     spec: dict[str, Any]
     config: dict[str, Any]
     manifest: dict[str, Any]
+    close: Callable[[], None] = lambda: None
 
 
 def load_evaluator(
@@ -62,8 +64,9 @@ def load_evaluator(
         raise FileNotFoundError(f"Evaluator plugin must be a Python file: {evaluator_path}")
     module = _import_module(evaluator_path)
     evaluate = getattr(module, "evaluate", None)
-    if not callable(evaluate):
-        raise AttributeError(f"Evaluator plugin must define evaluate(request): {evaluator_path}")
+    factory = getattr(module, "make_evaluator", None)
+    if not callable(evaluate) and not callable(factory):
+        raise AttributeError(f"Evaluator plugin must define evaluate(request) or make_evaluator(config): {evaluator_path}")
     raw_spec = getattr(module, "EVALUATOR_SPEC", None)
     if callable(getattr(module, "evaluator_spec", None)):
         raw_spec = module.evaluator_spec()
@@ -79,6 +82,15 @@ def load_evaluator(
         if not isinstance(spec.get(key), str) or not str(spec[key]).strip():
             raise ValueError(f"Evaluator spec {key!r} must be non-empty text.")
     normalized_config = dict(config or {})
+    close = lambda: None
+    if callable(factory):
+        instance = factory(normalized_config)
+        evaluate = getattr(instance, "evaluate", None)
+        if not callable(evaluate):
+            raise TypeError("make_evaluator(config) must return an object with evaluate(request)")
+        close = getattr(instance, "close", close)
+        if not callable(close):
+            raise TypeError("Evaluator close must be callable when present")
     closure = source_closure_manifest(evaluator_path, None)
     portable_closure = [
         {
@@ -112,6 +124,7 @@ def load_evaluator(
         spec=spec,
         config=normalized_config,
         manifest=manifest,
+        close=close,
     )
 
 
@@ -142,8 +155,8 @@ def run_evaluator(
             "task_success": False,
             "predicate_results": [],
             "terminal_reason": terminal_reason(
-                FailureCategory.EVALUATOR_ERROR,
-                "evaluator_exception",
+                FailureCategory.INVALID_STATE if isinstance(exc, InvalidRolloutState) else FailureCategory.EVALUATOR_ERROR,
+                "invalid_rollout_state" if isinstance(exc, InvalidRolloutState) else "evaluator_exception",
                 f"Evaluator raised {type(exc).__name__}: {exc}",
             ),
         }
@@ -169,6 +182,9 @@ def resolve_evaluator_path(
 
 
 def _normalize_record(raw: Mapping[str, Any], request: EvaluationRequest) -> dict[str, Any]:
+    # Reject invalid JSON numerics before predicates can silently ignore them.
+    # Missing measurements remain missing and are reported as insufficient evidence.
+    json.dumps(dict(raw), allow_nan=False)
     metrics = raw.get("metrics")
     events = raw.get("events")
     record = dict(raw)
@@ -179,9 +195,37 @@ def _normalize_record(raw: Mapping[str, Any], request: EvaluationRequest) -> dic
             "seed": request.seed,
             "parameters": dict(request.parameters),
             "metrics": dict(metrics) if isinstance(metrics, Mapping) else {},
-            "events": list(events) if isinstance(events, list) else [],
         }
     )
+    if events is not None:
+        if not isinstance(events, list) or not all(isinstance(event, Mapping) for event in events):
+            raise TypeError("Evaluator events must be a list of mappings")
+        signals: set[tuple[str, int]] = set()
+        for event in events:
+            step = event.get("step")
+            if type(step) is not int or not 0 <= step < request.max_steps:
+                raise ValueError("Event step must be a control tick inside the requested horizon")
+            if "active" in event and type(event["active"]) is not bool:
+                raise TypeError("Event active must be a boolean")
+            kind = event.get("kind", "event")
+            if kind not in {"event", "signal", "contact"}:
+                raise ValueError("Unsupported event kind")
+            if kind == "contact":
+                if not all(isinstance(event.get(key), str) and event[key] for key in ("body_a", "body_b")):
+                    raise ValueError("Contact events must identify both bodies")
+                if "force" in event and (type(event["force"]) not in (int, float) or event["force"] < 0):
+                    raise ValueError("Contact force must be a non-negative finite number")
+            elif not isinstance(event.get("name"), str) or not event["name"]:
+                raise ValueError("Events/signals must have a name")
+            if kind == "signal":
+                cell = (event["name"], step)
+                if cell in signals:
+                    raise ValueError("Duplicate signal samples at one control tick")
+                signals.add(cell)
+        record["events"] = list(events)
+    record["task_contract_sha256"] = request.task_contract_sha256
+    record["suite"] = request.suite
+    record["environment"] = request.environment
     reward = raw.get("total_reward", raw.get("reward"))
     record["total_reward"] = float(reward) if isinstance(reward, (int, float)) else None
     return record

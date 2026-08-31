@@ -6,6 +6,34 @@ from simrig.predicates import apply_predicates, evaluate_predicate, validate_pre
 
 
 class PredicateTests(unittest.TestCase):
+    def test_missing_contact_channel_cannot_prove_no_forbidden_contacts(self):
+        predicate = {"id": "safe", "type": "forbidden_contact", "body_a": "tool", "body_b": "wall"}
+        result = apply_predicates({"events": []}, [predicate])
+        self.assertIsNone(result["task_success"])
+        self.assertEqual(result["terminal_reason"]["code"], "insufficient_evidence")
+        measured = apply_predicates(
+            {"events": [], "evidence": {"contacts": [{"body_a": "wall", "body_b": "tool", "complete": True}]}},
+            [predicate],
+        )
+        self.assertTrue(measured["task_success"])
+
+    def test_missing_metric_is_unknown_not_a_measured_failure(self):
+        result = apply_predicates({}, [{"id": "reach", "type": "metric", "metric": "distance", "value": 0.05}])
+        self.assertIsNone(result["task_success"])
+        self.assertFalse(result["predicate_results"][0]["evidence_available"])
+
+    def test_optional_checks_or_plugin_success_cannot_establish_independent_success(self):
+        for predicates in ([], [{"id": "x", "type": "metric", "metric": "x", "value": 1, "required": False}]):
+            result = apply_predicates({"metrics": {"x": 0}, "task_success": True}, predicates)
+            self.assertIsNone(result["task_success"])
+
+    def test_brief_crossing_does_not_pass_a_hold_contract(self):
+        result = apply_predicates(
+            {"events": [{"kind": "signal", "name": "inside", "step": n, "active": n == 1} for n in range(5)]},
+            [{"id": "hold", "type": "sustained", "event": "inside", "hold_steps": 3}],
+        )
+        self.assertFalse(result["task_success"])
+
     def test_sustained_signal_requires_consecutive_steps(self) -> None:
         record = {
             "events": [

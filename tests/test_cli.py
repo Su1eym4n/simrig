@@ -21,6 +21,22 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
 
 
 class CliTests(unittest.TestCase):
+    def test_eval_preserves_repeated_trials_and_accepts_explicit_output(self):
+        with (
+            patch("simrig.cli.resolve_policy_checkpoint", return_value=Path("run/policy.params")),
+            patch("simrig.cli.eval_policy", side_effect=lambda *args, **kwargs: {"task_success": False}),
+            patch("simrig.cli.save_json") as save,
+        ):
+            for seed in (0, 1, 0):
+                code, _, _ = _run_cli(["eval", "run/policy.params", "--env", "Task", "--seed", str(seed)])
+                self.assertEqual(code, 0)
+            paths = [call.args[0] for call in save.call_args_list]
+            self.assertEqual(len(set(paths)), 3)
+            self.assertIn("seed-1", paths[1].name)
+            code, _, _ = _run_cli(["eval", "run/policy.params", "--env", "Task", "--output", "trial.json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(save.call_args.args[0], Path("trial.json"))
+
     def test_cli_version(self) -> None:
         parser = build_parser()
         stdout = StringIO()

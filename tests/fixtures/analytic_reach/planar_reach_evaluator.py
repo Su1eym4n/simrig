@@ -81,6 +81,7 @@ def evaluate(request: Mapping[str, Any]) -> dict[str, Any]:
             "forbidden_contact_count": contacts,
         },
         "events": events,
+        "evidence": {"contacts": [{"body_a": "end_effector", "body_b": "forbidden_zone", "complete": True}]},
     }
 
 

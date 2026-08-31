@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
@@ -26,23 +26,14 @@ from simrig.browser_shell import (
     threejs_agent_camera_script,
     viewer_styles,
 )
-from simrig.networks import make_network_factory
-from simrig.playground_backend import (
-    _apply_command,
-    _checkpoint_env_overrides,
-    _ensure_checkpoint_vision_runtime,
-    _import_training_deps,
-    _validate_backend,
-    load_env,
-)
-from simrig.presets import resolve_network_factory, resolve_network_type
+from simrig.rollout import PolicyRuntime, validate_state
+from simrig.success import evaluate_task_success, load_success_spec, metric_value
 from simrig.rendering import (
     CameraState,
     configure_headless_mujoco_gl,
     make_tracking_camera,
     tracking_body_id,
 )
-from simrig.runtime import verify_checkpoint_runtime
 from simrig.three_scene import camera_transforms, geom_transforms, scene_payload
 
 
@@ -56,6 +47,9 @@ class PreviewStatus:
     done: bool
     episode: int
     episode_state: str
+    episode_outcome: str
+    task_success: bool | None
+    task_success_reason: str
     survival_steps: int
     last_episode_survival_steps: int | None
     last_episode_reward: float | None
@@ -70,6 +64,22 @@ class PreviewStatus:
     render_mode: str
     frame_busy: bool
     renderer_error: str | None
+
+
+def _preview_outcome(
+    values: list[float | None], spec: Mapping[str, Any], *, done: bool,
+) -> tuple[bool | None, str]:
+    """Report environment success only after termination, without using reward.
+
+    Missing samples cannot establish failure or bridge gaps in a hold criterion.
+    This is the environment's own outcome, not independent acceptance evidence.
+    """
+    if not done:
+        return None, "Episode has not ended."
+    if not values or any(value is None or not np.isfinite(value) for value in values):
+        return None, "Outcome unknown: no complete finite success metric is available."
+    passed, reason = evaluate_task_success(values, spec or None)
+    return passed, f"Environment metrics: {reason} This is not independent acceptance."
 
 
 class PolicyPreviewSession:
@@ -94,14 +104,15 @@ class PolicyPreviewSession:
         auto_reset: bool = False,
         auto_reset_delay: float = 1.5,
         allow_runtime_mismatch: bool = False,
+        reset_transform: Callable[[Any, Any], Any] | None = None,
     ) -> None:
         configure_headless_mujoco_gl()
-        _validate_backend(backend)
-        self.runtime_compatibility = verify_checkpoint_runtime(
-            checkpoint,
-            allow_mismatch=allow_runtime_mismatch,
+        self.rollout = PolicyRuntime(
+            checkpoint, env_name=env_name, backend=backend, small_network=small_network,
+            allow_runtime_mismatch=allow_runtime_mismatch,
         )
-        _ensure_checkpoint_vision_runtime(checkpoint)
+        self.runtime_compatibility = self.rollout.runtime_compatibility
+        self.reset_transform = reset_transform
         self.env_name = env_name
         self.checkpoint = str(checkpoint)
         self.backend = backend
@@ -126,14 +137,7 @@ class PolicyPreviewSession:
         self._last_frame_jpeg: bytes | None = None
         self._scene_payload: dict[str, Any] | None = None
 
-        (
-            self.jax,
-            self.jp,
-            self.brax_model,
-            self.running_statistics,
-            self.ppo_networks,
-            *_,
-        ) = _import_training_deps()
+        self.jax, self.jp = self.rollout.jax, self.rollout.jp
         try:
             import mujoco  # type: ignore
             from PIL import Image  # type: ignore
@@ -144,32 +148,13 @@ class PolicyPreviewSession:
         self.mujoco = mujoco
         self.Image = Image
         self.ImageDraw = ImageDraw
-        self.env = load_env(
-            env_name,
-            config_overrides=_checkpoint_env_overrides(checkpoint),
-        )
-        network_config = resolve_network_factory(
-            checkpoint,
-            small_network=small_network,
-        )
-        network_factory = make_network_factory(
-            resolve_network_type(checkpoint),
-            network_config,
-            ppo_networks=self.ppo_networks,
-        )
-        networks = network_factory(
-            self.env.observation_size,
-            self.env.action_size,
-            preprocess_observations_fn=self.running_statistics.normalize,
-        )
-        params = self.brax_model.load_params(str(checkpoint))
-        self.policy = self.jax.jit(
-            self.ppo_networks.make_inference_fn(networks)(params, deterministic=True)
-        )
-        self.reset_fn = self.jax.jit(self.env.reset)
-        self.step_fn = self.jax.jit(self.env.step)
-        self.rng = self.jax.random.PRNGKey(seed)
-        self.state = self.reset_fn(self.rng)
+        self.env = self.rollout.env
+        self.success_spec = load_success_spec(env_name, self.env)
+        self.success_values: list[float | None] = []
+        self.state, self.rng = self.rollout.reset(seed)
+        if self.reset_transform is not None:
+            self.state = self.reset_transform(self.env, self.state)
+            validate_state(self.state, self.env.observation_size)
         self.command_controls = _command_controls(self.env, self.state)
         if self.command is not None and len(self.command) != len(self.command_controls):
             raise ValueError(
@@ -201,9 +186,7 @@ class PolicyPreviewSession:
         self._agent_fps = min(12, self.fps)
         self.physics_rate_hz = _rate_hz(getattr(self.env.mj_model.opt, "timestep", None))
         self.policy_observation_rate_hz = _rate_hz(getattr(self.env, "dt", None))
-        self.episode_horizon = _checkpoint_episode_horizon(checkpoint) or _episode_horizon(
-            self.env
-        )
+        self.episode_horizon = _episode_horizon(self.env) or _checkpoint_episode_horizon(checkpoint)
         self._rollout_thread: threading.Thread | None = None
         self._running = True
         if self.render_mode == "threejs":
@@ -314,6 +297,7 @@ class PolicyPreviewSession:
             }
 
     def _status_unlocked(self) -> PreviewStatus:
+        success, reason = _preview_outcome(self.success_values, self.success_spec, done=self.done)
         return PreviewStatus(
             env_name=self.env_name,
             checkpoint=self.checkpoint,
@@ -323,6 +307,12 @@ class PolicyPreviewSession:
             done=self.done,
             episode=self.episode,
             episode_state="ended" if self.done else "paused" if self.paused else "running",
+            episode_outcome=(
+                "pending" if not self.done else "success" if success is True
+                else "failure" if success is False else "unknown"
+            ),
+            task_success=success,
+            task_success_reason=reason,
             survival_steps=self.step_count,
             last_episode_survival_steps=self.last_episode_survival_steps,
             last_episode_reward=self.last_episode_reward,
@@ -437,6 +427,7 @@ class PolicyPreviewSession:
             self._agent_frame_pump.close()
         if self._rollout_thread is not None:
             self._rollout_thread.join(timeout=2.0)
+        self.rollout.close()
 
     def _initial_agent_camera(self, requested: str | int | None) -> str | None:
         if not self.agent_camera_names:
@@ -486,13 +477,16 @@ class PolicyPreviewSession:
         self._copy_state_to_mujoco_unlocked()
 
     def _step_once_unlocked(self) -> None:
-        self._apply_current_command()
-        self.rng, action_rng = self.jax.random.split(self.rng)
-        action, _ = self.policy(self.state.obs, action_rng)
-        self.state = self.step_fn(self.state, action)
+        self.state, self.rng, _ = self.rollout.advance(
+            self.state, self.rng, command=self.command,
+        )
+        self.command_applied = self.command is not None
         self.last_reward = float(self.state.reward)
         self.total_reward += self.last_reward
         self.step_count += 1
+        self.success_values.append(metric_value(
+            getattr(self.state, "metrics", None), str(self.success_spec.get("metric") or "success"),
+        ))
         self.done = bool(self.state.done)
         if self.done:
             self.last_episode_survival_steps = self.step_count
@@ -501,12 +495,16 @@ class PolicyPreviewSession:
 
     def _reset_unlocked(self) -> None:
         self.rng, reset_rng = self.jax.random.split(self.rng)
-        self.state = self.reset_fn(reset_rng)
+        self.state = self.rollout.reset_key(reset_rng)
+        if self.reset_transform is not None:
+            self.state = self.reset_transform(self.env, self.state)
+            validate_state(self.state, self.env.observation_size)
         self.episode += 1
         self.step_count = 0
         self.total_reward = 0.0
         self.last_reward = 0.0
         self.done = False
+        self.success_values.clear()
         self._episode_ended_at = None
         self.command_controls = _command_controls(self.env, self.state)
         self._apply_current_command()
@@ -515,11 +513,8 @@ class PolicyPreviewSession:
         if self.command is None:
             self.command_applied = False
             return
-        self.state, self.command_applied = _apply_command(
-            self.env,
-            self.state,
-            self.jp.asarray(self.command),
-        )
+        self.state = self.rollout.apply_command(self.state, self.command)
+        self.command_applied = True
 
     def _copy_state_to_mujoco_unlocked(self) -> None:
         self.mj_data.qpos[:] = np.asarray(self.state.data.qpos)
@@ -746,6 +741,7 @@ def serve_policy_preview(
     auto_reset: bool = False,
     auto_reset_delay: float = 1.5,
     allow_runtime_mismatch: bool = False,
+    reset_transform: Callable[[Any, Any], Any] | None = None,
 ) -> None:
     session = PolicyPreviewSession(
         checkpoint,
@@ -764,6 +760,7 @@ def serve_policy_preview(
         auto_reset=auto_reset,
         auto_reset_delay=auto_reset_delay,
         allow_runtime_mismatch=allow_runtime_mismatch,
+        reset_transform=reset_transform,
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -904,7 +901,8 @@ def _threejs_html() -> str:
     #loading.error { color: #fca5a5; padding: 28px; text-align: center; white-space: pre-wrap; }
     #render-meta { color: #94a3b8; font-size: 12px; margin: -4px 0 12px; }
     #episode-state { border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: #0f172a; }
-    #episode-state.ended { border-color: #ef4444; background: #2a1118; color: #fecaca; }
+    #episode-state.failure { border-color: #ef4444; background: #2a1118; color: #fecaca; }
+    #episode-state.success { border-color: #22c55e; background: #10251b; color: #bbf7d0; }
     #episode-state.paused { border-color: #f59e0b; color: #fde68a; }
     #run-facts { color: #94a3b8; font-size: 12px; line-height: 1.55; margin-bottom: 14px; }
     #command-section[hidden] { display: none; }
@@ -1195,10 +1193,11 @@ def _threejs_html() -> str:
       delete copy.tracking_position;
       statusEl.textContent = JSON.stringify(copy, null, 2);
       renderMetaEl.textContent = `${status.env_name} · ${status.playback_rate_hz || status.fps_target || 24} Hz playback · display-rate WebGL`;
-      episodeStateEl.className = status.episode_state || '';
-      episodeStateEl.textContent = status.done
-        ? `Episode ${status.episode} ended · survived ${status.survival_steps} steps`
-        : `Episode ${status.episode} · ${status.episode_state} · ${status.survival_steps} steps`;
+      episodeStateEl.className = status.done ? (status.episode_outcome || 'unknown') : status.episode_state;
+      episodeStateEl.title = status.task_success_reason || '';
+      const outcome = status.task_success === true ? 'Task succeeded'
+        : status.task_success === false ? 'Task failed' : 'Ended · outcome unknown';
+      episodeStateEl.textContent = `Episode ${status.episode} · ${status.done ? outcome : status.episode_state} · ${status.step} steps`;
       const rate = value => value == null ? 'n/a' : `${value} Hz`;
       const horizon = status.episode_horizon == null ? 'n/a' : `${status.episode_horizon} steps`;
       const lastEpisode = status.last_episode_survival_steps == null ? '' : ` · last episode ${status.last_episode_survival_steps} steps`;
@@ -1312,7 +1311,8 @@ def _frame_html() -> str:
   <title>SimRig Preview</title>
   <style>{viewer_styles(sidebar_width=320)}
     #episode-state {{ border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: #0f172a; }}
-    #episode-state.ended {{ border-color: #ef4444; background: #2a1118; color: #fecaca; }}
+    #episode-state.failure {{ border-color: #ef4444; background: #2a1118; color: #fecaca; }}
+    #episode-state.success {{ border-color: #22c55e; background: #10251b; color: #bbf7d0; }}
     #episode-state.paused {{ border-color: #f59e0b; color: #fde68a; }}
     #run-facts {{ color: #94a3b8; font-size: 12px; line-height: 1.55; margin-bottom: 14px; }}
     #command-section[hidden] {{ display: none; }}
@@ -1367,10 +1367,11 @@ def _frame_html() -> str:
         const status = await res.json();
         statusEl.textContent = JSON.stringify(status, null, 2);
         applyCameraFromStatus(status);
-        episodeStateEl.className = status.episode_state || '';
-        episodeStateEl.textContent = status.done
-          ? `Episode ${{status.episode}} ended · survived ${{status.survival_steps}} steps`
-          : `Episode ${{status.episode}} · ${{status.episode_state}} · ${{status.survival_steps}} steps`;
+        episodeStateEl.className = status.done ? (status.episode_outcome || 'unknown') : status.episode_state;
+        episodeStateEl.title = status.task_success_reason || '';
+        const outcome = status.task_success === true ? 'Task succeeded'
+          : status.task_success === false ? 'Task failed' : 'Ended · outcome unknown';
+        episodeStateEl.textContent = `Episode ${{status.episode}} · ${{status.done ? outcome : status.episode_state}} · ${{status.step}} steps`;
         const rate = value => value == null ? 'n/a' : `${{value}} Hz`;
         const horizon = status.episode_horizon == null ? 'n/a' : `${{status.episode_horizon}} steps`;
         const lastEpisode = status.last_episode_survival_steps == null ? '' : ` · last episode ${{status.last_episode_survival_steps}} steps`;

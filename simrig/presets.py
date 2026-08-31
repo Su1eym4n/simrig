@@ -179,7 +179,7 @@ def resolve_small_network(
 
 def checkpoint_config(checkpoint: Path | str) -> dict[str, Any] | None:
     """Load the resolved training config stored beside a checkpoint."""
-    config_path = Path(checkpoint).resolve().parent / "config.json"
+    config_path = checkpoint_config_path(checkpoint)
     if not config_path.exists():
         return None
     try:
@@ -188,3 +188,13 @@ def checkpoint_config(checkpoint: Path | str) -> dict[str, Any] | None:
         return None
     config = data.get("config")
     return config if isinstance(config, dict) else None
+
+
+def checkpoint_config_path(checkpoint: Path | str) -> Path:
+    """Locate SimRig metadata for final parameters or a numeric Orbax checkpoint."""
+    path = Path(checkpoint).expanduser().resolve()
+    if path.is_dir() and (path / "policy.params").is_file():
+        return path / "config.json"
+    if path.is_dir() and path.parent.name == "checkpoints":
+        return path.parent.parent / "config.json"
+    return path.parent / "config.json"

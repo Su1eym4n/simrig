@@ -148,7 +148,7 @@ matrix and then applies the same independent predicates.
 
 A task-contract v2 evaluator is a trusted local Python file. It declares
 `EVALUATOR_SPEC` (name, semantic version, protocol version 1) and
-`evaluate(request)`. It owns simulator construction and checkpoint loading.
+`evaluate(request)`. It may own simulator construction and checkpoint loading, or delegate them to the reusable Playground adapter described below.
 It must not decide promotion from training reward.
 
 See [the MuJoCo reaching evaluator](https://github.com/Su1eym4n/simrig/blob/main/examples/mujoco_reach/evaluator.py)
@@ -232,10 +232,76 @@ The protocol is backend-neutral, but plugins are task-specific: each must load
 its supported simulator and policy format and measure its own physical signals.
 An arbitrary environment name or checkpoint cannot run without that integration.
 
-Evaluator plugins are not sandboxed. SimRig does not yet provide backend
-adapters, distributed evaluator workers, a columnar event store, or a
-persistent asynchronous checkpoint watcher. Source closure and
-checkpoint-directory hashing are intentionally bounded.
+Evaluator plugins are not sandboxed. The Playground adapter below is available;
+other backends still require task-owned integration. Distributed evaluator
+workers, a columnar event store, and a persistent asynchronous checkpoint watcher
+are not supplied. Checkpoint hashing refuses artifacts over its file-count bound
+instead of silently hashing only a prefix.
+
+### Reusable Playground evaluator
+
+For learned PPO policies, use a task-owned `make_evaluator(config)` factory:
+
+```python
+from simrig.playground_evaluator import PlaygroundEvaluator
+
+EVALUATOR_SPEC = {"name": "my-task", "version": "1", "protocol_version": 1}
+
+def make_evaluator(config):
+    return PlaygroundEvaluator(MyMeasurements)
+```
+
+`MyMeasurements(env, request)` creates a fresh observer for one episode:
+
+- `reset(state)` applies scenario parameters and returns the initial state.
+  Rebuild observations whenever target/command state changes. Reject unknown
+  parameters instead of silently ignoring them.
+- `observe(state, step)` measures the physical state after each step. Do not
+  read training reward or success labels to decide the outcome.
+- `result()` returns raw `metrics`, `events`, and measurement `evidence`.
+
+The adapter reuses a compiled `PolicyRuntime` across seeds, resets each episode,
+loads recorded network/normalization settings, checks state/action shapes and
+finite values, and closes the runtime when the suite finishes. Learned policy
+acceptance requires recorded compatible runtime metadata. Inputs may be final
+parameters, a run directory, or a numeric Orbax checkpoint directory. A `.py`
+input explicitly selects a trusted scripted control exposing
+`make_controller(env) -> callable(state, rng)`; never describe it as learned.
+
+See `examples/learned_reach/evaluator.py` for physical measurements and
+`examples/learned_reach/README.md` for training, controls, held-out evaluation,
+and a preview using the same target/seed. Keep the task-specific logic there,
+not in SimRig's generic adapter.
+
+### Evidence and report validity
+
+For an absence or upper-bound check, declare what was completely observed:
+
+```json
+{
+  "events": [],
+  "evidence": {
+    "events": ["unsafe_motion"],
+    "contacts": [{"body_a": "tool", "body_b": "wall", "complete": true}]
+  }
+}
+```
+
+This declaration is an evaluator obligation, not a substitute for implementing
+measurements. Emit it only after observing the required channel throughout the
+actual rollout. An observed forbidden contact can fail immediately; an empty
+stream without coverage cannot pass. Missing metrics/channels produce
+`task_success: null`, category `incomplete`, code `insufficient_evidence`.
+Non-finite values, malformed events, and invalid simulator states fail closed.
+Required gate metrics cannot discard unknown samples from a success-rate
+calculation. Duplicate/unrequested trials, mixed contract/checkpoint identities,
+and invalid-state/evaluator/safety failures prevent promotion.
+
+Suite report schema v2 includes trial hashes and checkpoint/configuration
+identity. Ranking requires matching report schema, contract, evaluator, and
+suite. Default `eval`, `eval-suite`, and `eval-checkpoints` report paths are
+unique, including repeated runs at the same seed; `eval --output PATH` can select
+an explicit report destination. Preserve rejected reports as evidence.
 
 ### Contract migration and compatibility
 
@@ -295,3 +361,8 @@ instead.
 
 Fix the earliest failing gate and rerun from that gate. Do not compensate for
 environment defects by immediately increasing training steps.
+
+The shared Playground rollout currently requires recorded `action_repeat=1`.
+Other values fail explicitly instead of silently changing the policy control
+rate. The integration is validated on CPU state observations; vision/GPU and
+hardware acceptance are not established by the learned reaching reference.

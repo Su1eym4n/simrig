@@ -31,6 +31,7 @@ class PredicateResult:
     reason: str
     failure_category: str
     failure_code: str
+    evidence_available: bool = True
 
 
 def validate_predicate(predicate: Mapping[str, Any], *, path: str = "predicate") -> list[str]:
@@ -165,7 +166,7 @@ def apply_predicates(
                 "expected": failed.expected,
             },
         )
-    elif results:
+    elif any(item.required for item in results):
         success = True
         reason = terminal_reason(
             FailureCategory.SUCCESS,
@@ -173,9 +174,13 @@ def apply_predicates(
             "All required independent predicates passed.",
         )
     else:
-        success = normalized.get("task_success")
-        success = success if isinstance(success, bool) else None
-        reason = normalize_terminal_reason(normalized.get("terminal_reason"), task_success=success)
+        success = None
+        reason = terminal_reason(
+            FailureCategory.INCOMPLETE, "insufficient_evidence",
+            "No required independent success predicates were evaluated.",
+        )
+    if reason["code"] == "insufficient_evidence":
+        success = None
     normalized["predicate_results"] = [item.__dict__ for item in results]
     normalized["task_success"] = success
     normalized["terminal_reason"] = reason
@@ -228,6 +233,12 @@ def evaluate_predicate(
             str(predicate.get("operator", "<=")),
             expected,
         )
+    missing = _missing_evidence(record, predicate, actual, passed)
+    if missing:
+        return PredicateResult(
+            predicate_id, predicate_type, False, required, actual, expected,
+            missing, FailureCategory.INCOMPLETE.value, "insufficient_evidence", False,
+        )
     category = str(predicate.get("failure_category", FailureCategory.TASK_FAILURE.value))
     code = str(predicate.get("failure_code") or f"{predicate_id}_failed")
     reason = (
@@ -246,6 +257,46 @@ def evaluate_predicate(
         failure_category=category,
         failure_code=code,
     )
+
+
+def _missing_evidence(record: Mapping[str, Any], predicate: Mapping[str, Any], actual: Any, passed: bool) -> str | None:
+    """Absence of reported events is not evidence that a sensor observed none."""
+    kind = predicate["type"]
+    if kind == "metric":
+        return None if actual is not None else f"Missing finite metric {predicate['metric']!r}."
+    events = record.get("events")
+    if not isinstance(events, list):
+        return "Missing event stream."
+    evidence = record.get("evidence")
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    if kind == "forbidden_contact":
+        # An observed violation is enough to fail even an incomplete stream.
+        if not passed:
+            return None
+        target = {predicate["body_a"], predicate["body_b"]}
+        covered = any(
+            isinstance(pair, Mapping) and pair.get("complete") is True
+            and {pair.get("body_a"), pair.get("body_b")} == target
+            for pair in evidence.get("contacts", [])
+        )
+        if not covered:
+            return "No complete contact evidence declared for the required body pair."
+        if float(predicate.get("min_force", 0)) > 0 and any(
+            event.get("kind") == "contact"
+            and {event.get("body_a"), event.get("body_b")} == target
+            and _number(event.get("force")) is None
+            for event in _events(events)
+        ):
+            return "Contact force was not measured."
+        return None
+    names = predicate["events"] if kind == "sequence" else [predicate["event"]]
+    declared = evidence.get("events", [])
+    observed = {event.get("name") for event in _events(events) if event.get("kind") != "contact"}
+    if any(name not in observed and name not in declared for name in names):
+        return "Required event/signal channel was not measured."
+    if kind == "event_count" and "max_count" in predicate and passed and predicate["event"] not in declared:
+        return "An upper event-count bound requires a declared complete event channel."
+    return None
 
 
 def _events(value: Any) -> list[Mapping[str, Any]]:

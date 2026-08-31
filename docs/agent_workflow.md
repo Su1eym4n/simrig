@@ -62,6 +62,20 @@ Do not put project-specific physics or semantics into SimRig's gate engine.
 Expose those outcomes as stable evaluator metrics, then declare task-agnostic
 aggregations and thresholds in the contract.
 
+For learned Playground policies, use `PlaygroundEvaluator` with task-owned
+scenario resets and physical measurements. The shared runtime restores final
+parameters or Orbax checkpoints and retains the recorded observation
+preprocessing. It currently requires `action_repeat=1`; unsupported control
+rates fail explicitly. See the [learned reaching reference](../examples/learned_reach/README.md)
+for a runnable adapter, baselines, frozen suites, and observed limitations.
+
+Missing metrics/contact coverage are insufficient evidence, never an automatic
+pass. Compare a positive control and deliberately weak/misleading controls
+before describing a learned result as useful. If random actions pass, retain
+that result: the task or acceptance distribution may be too easy. Changes to
+holding, contact, or other task requirements remain explicit semantic changes.
+`reward-probe` analyzes supplied records; it does not execute an exploit search.
+
 ## Existing MuJoCo Playground Task (preferred)
 
 1. List or confirm env:

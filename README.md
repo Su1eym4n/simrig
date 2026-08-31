@@ -216,6 +216,26 @@ training. Its inputs are clearly labeled scripted controllers. Evaluator plugins
 own environment setup and policy loading: the protocol is reusable, but an
 arbitrary environment or SDK is not supported merely by passing its name.
 
+For learned checkpoints, the [complete reaching reference](examples/learned_reach/README.md)
+uses SimRig's reusable Playground evaluator adapter. The agent supplies scenario
+reset and physical measurement hooks; SimRig loads the policy, runs each seeded
+case, validates states/actions, and applies the independent gates. The same
+policy runtime powers `eval`, `preview`, and native `demo`, including final
+`policy.params` and numeric Orbax checkpoints. Evaluation reports use unique
+filenames; `simrig eval --output PATH` selects an explicit destination.
+The runtime currently requires `action_repeat=1`; unsupported control rates
+fail explicitly. This is an end-to-end integration reference, not proof of a
+challenging task: the recorded learned policy and random actions both pass all
+24 development/holdout cases under the existing arrival-only definition. The
+reference verifier reports the failed baseline-discrimination expectation; see
+the [measured results](examples/learned_reach/results.md).
+
+Missing measurements are insufficient evidence, not successful absence checks.
+Suite reports record per-trial identities and refuse mixed/duplicate coverage.
+Contact predicates require declared complete measurement coverage before an
+empty contact stream can pass. Older report schemas must not be ranked together
+with current reports.
+
 Inspection and reproducing an unchanged example or upstream smoke run do not
 require designing a new task. Such smoke runs check the pipeline; they are not
 independent promotion evidence. New behaviors or changed success criteria need

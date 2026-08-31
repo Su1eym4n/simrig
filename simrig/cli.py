@@ -257,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow an explicitly qualitative rollout when recorded runtime versions differ.",
     )
     eval_parser.add_argument("--json", action="store_true")
+    eval_parser.add_argument("--output", type=Path, help="Explicit report path; defaults to a unique trial report.")
     eval_parser.set_defaults(func=_cmd_eval)
 
     gate_parser = sub.add_parser(
@@ -350,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("checkpoint")
     preview_parser.add_argument("--env", dest="env_name", required=True)
     preview_parser.add_argument("--backend", default="mujoco-playground")
+    preview_parser.add_argument("--seed", type=int, default=0, help="Initial environment and policy rollout seed.")
     preview_parser.add_argument("--host", default="127.0.0.1")
     preview_parser.add_argument("--port", type=int, default=8765)
     preview_parser.add_argument("--width", type=int, default=960)
@@ -607,7 +609,11 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         command=command,
         allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
-    save_json(Path("reports") / f"{slugify(args.env_name)}_eval.json", result)
+    from simrig.io import unique_report_path
+
+    output = args.output or unique_report_path(f"{args.env_name}-{Path(checkpoint).name}-seed-{args.seed}")
+    result["report_path"] = str(output.resolve())
+    save_json(output, result)
     _print(result, as_json=args.json)
 
 
@@ -655,10 +661,9 @@ def _cmd_eval_suite(args: argparse.Namespace) -> int:
         evaluator_path=args.evaluator,
         limits=_evaluation_limits(args),
     )
-    output = args.output or (
-        Path("reports")
-        / f"{slugify(Path(args.checkpoint).name)}_{slugify(args.suite)}_eval_suite.json"
-    )
+    from simrig.io import unique_report_path
+
+    output = args.output or unique_report_path(f"{Path(args.checkpoint).name}-{args.suite}-eval-suite")
     save_json(output, result)
     _print(result, as_json=args.json)
     return 0 if result["passed"] else 1
@@ -733,6 +738,7 @@ def _cmd_preview(args: argparse.Namespace) -> None:
         checkpoint,
         env_name=args.env_name,
         backend=args.backend,
+        seed=args.seed,
         host=args.host,
         port=args.port,
         width=args.width,

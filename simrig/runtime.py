@@ -15,6 +15,7 @@ import warnings
 import xml.etree.ElementTree as ET
 
 from simrig._version import __version__
+from simrig.presets import checkpoint_config_path
 
 
 _DISTRIBUTIONS = {
@@ -106,7 +107,7 @@ def checkpoint_runtime(
     checkpoint: Path | str,
 ) -> tuple[dict[str, Any] | None, Path | None]:
     """Load the training runtime from a checkpoint's sibling config.json."""
-    config_path = Path(checkpoint).expanduser().resolve().parent / "config.json"
+    config_path = checkpoint_config_path(checkpoint)
     if not config_path.is_file():
         return None, None
     try:

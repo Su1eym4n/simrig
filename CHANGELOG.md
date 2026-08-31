@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Show green success, red failure, or neutral unknown outcomes in policy previews
+  using environment success metrics. Keep episode completion separate from task
+  success, and replace survival wording with neutral step counts.
+- Share policy loading and checked rollout execution across headless eval,
+  browser preview, native demo, and a reusable Playground evaluator adapter.
+  Restore final parameter files and Orbax checkpoints with recorded network
+  normalization and environment identity checks.
+- Add task-owned reset/measurement hooks, reusable evaluator instances, unique
+  trial reports, report schema v2, missing-evidence outcomes, strict seed coverage,
+  and invalid numerical state/action checks. Empty contact streams require
+  declared measurement coverage; mixed identities and unknown samples cannot
+  silently pass promotion.
+- Add a real learned-reaching acceptance reference with IK, zero, random, and
+  near-miss controls, a separately reserved holdout suite, and scenario-matched
+  previews. Fix stale post-integration site positions in the reaching environment
+  discovered by the independent evaluator; keep its reward formula and threshold.
+- Add `preview --seed` and `eval --output`; preserve unique reports by default.
+
 - Add versioned task contracts with `simrig task init`, `validate`, `freeze`,
   and semantic `diff`. Frozen contracts use canonical content hashes and can
   enforce resolved timestep, wall-time, GPU-hour, and metric abort budgets.
