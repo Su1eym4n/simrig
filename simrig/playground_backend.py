@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -22,6 +23,7 @@ from simrig.custom_env import (
     resolve_env_label,
 )
 from simrig.io import default_run_dir, save_json
+from simrig.evaluator import load_evaluator, resolve_evaluator_path
 from simrig.networks import (
     MLP_NETWORK,
     is_vision_network,
@@ -31,13 +33,26 @@ from simrig.networks import (
 from simrig.paths import find_menagerie
 from simrig.presets import (
     apply_preset_scale,
+    canonical_preset,
     checkpoint_config,
+    checkpoint_config_path,
     legacy_network_factory,
     preset,
-    resolve_network_factory,
     resolve_network_type,
 )
-from simrig.runtime import runtime_manifest, training_provenance, verify_checkpoint_runtime
+from simrig.progress import maybe_tensorboard_writer, record_progress
+from simrig.run_manifest import finish_run_manifest, start_run_manifest
+from simrig.runtime import runtime_manifest, training_provenance
+from simrig.success import collect_success_value, evaluate_task_success, load_success_spec
+from simrig.task_contract import (
+    AbortMonitor,
+    TrainingBudgetExceeded,
+    compare_task_contracts,
+    enforce_compute_budget,
+    enforce_runtime_budget,
+    load_task_contract,
+    validate_task_contract,
+)
 
 
 _PPO_CONFIG_KEYS = (
@@ -58,9 +73,60 @@ _PPO_CONFIG_KEYS = (
     "num_resets_per_eval",
     "max_grad_norm",
     "clipping_epsilon",
+    "clipping_epsilon_value",
+    "gae_lambda",
+    "normalize_advantage",
+    "vf_loss_coefficient",
+    "bootstrap_on_timeout",
+    "desired_kl",
+    "learning_rate_schedule",
+    "learning_rate_schedule_min_lr",
+    "learning_rate_schedule_max_lr",
     "vision",
     "augment_pixels",
 )
+
+
+def _adjust_num_evals_for_timestep_budget(config: dict[str, Any]) -> None:
+    """Prevent Brax eval cadence from multiplying a short timestep override.
+
+    Brax rounds every training/evaluation interval up to a whole PPO rollout
+    quantum. Keeping a large preset's 20 evals on a short run can therefore
+    turn a 500k request into more than 3M environment steps. Choose the
+    largest interval count, up to the preset request, that divides the minimum
+    number of required rollout quanta. This preserves as many evaluations as
+    possible without adding avoidable training steps.
+    """
+    timesteps = int(config.get("timesteps", 0))
+    requested_evals = int(config.get("num_evals", 1))
+    if timesteps <= 0 or requested_evals <= 1:
+        return
+
+    required = ("batch_size", "unroll_length", "num_minibatches")
+    if any(int(config.get(key, 0)) <= 0 for key in required):
+        return
+    action_repeat = max(int(config.get("action_repeat", 1)), 1)
+    resets_per_eval = max(int(config.get("num_resets_per_eval", 0)), 1)
+    rollout_quantum = (
+        int(config["batch_size"])
+        * int(config["unroll_length"])
+        * int(config["num_minibatches"])
+        * action_repeat
+    )
+    eval_quantum = rollout_quantum * resets_per_eval
+    required_quanta = (timesteps + eval_quantum - 1) // eval_quantum
+    max_intervals = min(requested_evals - 1, required_quanta)
+    intervals = max(
+        candidate
+        for candidate in range(1, max_intervals + 1)
+        if required_quanta % candidate == 0
+    )
+    effective_evals = intervals + 1
+
+    config["num_evals_requested"] = requested_evals
+    config["num_evals"] = effective_evals
+    config["training_step_quantum"] = rollout_quantum
+    config["estimated_total_timesteps"] = required_quanta * eval_quantum
 
 
 def _import_registry():
@@ -105,6 +171,7 @@ def resolve_training_config(
         raise ValueError("Implementation must be one of: auto, jax, warp")
     if seed < 0:
         raise ValueError("Training seed must be non-negative.")
+    preset_name = canonical_preset(preset_name)
 
     if is_env_module_path(env_name):
         try:
@@ -115,6 +182,7 @@ def resolve_training_config(
                 "network_spec": {"type": MLP_NETWORK, "factory": {}},
                 "vision_spec": {},
                 "training_config": {},
+                "success_spec": {},
             }
         default_impl = str(metadata["default_config"].get("impl", "jax"))
         resolved_impl = default_impl if impl == "auto" else impl
@@ -463,7 +531,11 @@ def smoke_env(
     seed: int = 0,
 ) -> SmokeResult:
     """Run a short reset/zero-action step test."""
+    from simrig.rollout import validate_state
+
     _validate_backend(backend)
+    if type(steps) is not int or steps < 1:
+        raise ValueError("steps must be a positive integer")
     label = resolve_env_label(env_name)
     jax, jp, *_ = _import_training_deps()
     try:
@@ -482,9 +554,14 @@ def smoke_env(
         reset = jax.jit(env.reset)
         step = jax.jit(env.step)
         state = reset(jax.random.PRNGKey(seed))
+        validate_state(state, env.observation_size)
         completed = 0
         for completed in range(1, steps + 1):
+            if bool(state.done):
+                state = reset(jax.random.fold_in(jax.random.PRNGKey(seed), completed))
+                validate_state(state, env.observation_size)
             state = step(state, jp.zeros(env.action_size))
+            validate_state(state, env.observation_size)
         return SmokeResult(
             env_name=label,
             backend=backend,
@@ -517,12 +594,24 @@ def train_ppo(
     impl: str = "auto",
     seed: int = 0,
     domain_randomization: bool = True,
+    resume: Path | str | None = None,
+    allow_resume_mismatch: bool = False,
+    task_contract_path: Path | str | None = None,
+    contract_compatibility: str = "exact",
 ) -> RunConfig:
     """Train a Playground or custom env module with Brax PPO."""
     _validate_backend(backend)
+    if contract_compatibility not in {"exact", "training_resume"}:
+        raise ValueError(
+            "contract_compatibility must be 'exact' or 'training_resume'"
+        )
     jax, jp, brax_model, _, ppo_networks, ppo, wrapper = _import_training_deps()
     del jp
     label = resolve_env_label(env_name)
+    preset_name = canonical_preset(preset_name)
+    resume_run_dir, restore_checkpoint_path = (None, None)
+    if resume is not None:
+        resume_run_dir, restore_checkpoint_path = _resolve_resume_target(resume)
     config = resolve_training_config(
         env_name,
         preset_name=preset_name,
@@ -530,12 +619,90 @@ def train_ppo(
         seed=seed,
         overrides=overrides,
     )
-    output_dir = Path(output) if output is not None else default_run_dir(label, preset_name)
+    _adjust_num_evals_for_timestep_budget(config)
+    task_contract: dict[str, Any] | None = None
+    task_contract_ref: dict[str, Any] | None = None
+    task_contract_envelope: dict[str, Any] | None = None
+    evaluator_manifest: dict[str, Any] | None = None
+    if task_contract_path is not None:
+        contract_path = Path(task_contract_path).expanduser().resolve()
+        task_contract, envelope = load_task_contract(contract_path, require_frozen=True)
+        task_contract_envelope = envelope
+        validation = validate_task_contract(task_contract)
+        if not validation.passed:
+            details = "\n".join(f"- {item}" for item in validation.errors)
+            raise ValueError(
+                "Training requires a current valid task contract. Migrate and re-freeze it first:\n"
+                + details
+            )
+        _verify_task_contract_target(
+            task_contract,
+            env_name=env_name,
+            backend=backend,
+            contract_path=contract_path,
+        )
+        estimated_steps = int(config.get("estimated_total_timesteps", config["timesteps"]))
+        enforce_compute_budget(
+            task_contract,
+            requested_timesteps=int(config["timesteps"]),
+            estimated_timesteps=estimated_steps,
+        )
+        task_contract_ref = {
+            "path": str(contract_path),
+            "sha256": envelope["sha256"] if envelope is not None else None,
+            "name": task_contract.get("name"),
+            "schema_version": task_contract.get("schema_version"),
+        }
+        config["task_contract"] = task_contract_ref
+        evaluation = task_contract.get("evaluation")
+        evaluator_decl = evaluation.get("evaluator") if isinstance(evaluation, Mapping) else None
+        if isinstance(evaluator_decl, Mapping) and evaluator_decl.get("plugin"):
+            plugin_path = resolve_evaluator_path(
+                str(evaluator_decl["plugin"]),
+                contract_path=contract_path,
+                source_path=(
+                    Path(str(envelope["source"])).expanduser()
+                    if envelope is not None and envelope.get("source")
+                    else None
+                ),
+            )
+            loaded_evaluator = load_evaluator(
+                plugin_path,
+                config=evaluator_decl.get("config")
+                if isinstance(evaluator_decl.get("config"), Mapping)
+                else None,
+            )
+            evaluator_manifest = loaded_evaluator.manifest
+            loaded_evaluator.close()
+            config["evaluator"] = evaluator_manifest
+    if restore_checkpoint_path is not None and resume_run_dir is not None:
+        resume_compatibility = _verify_resume_compatibility(
+            resume_run_dir,
+            env_name=env_name,
+            config=config,
+            allow_mismatch=allow_resume_mismatch,
+            active_task_contract=task_contract,
+            contract_policy=contract_compatibility,
+        )
+        config["resumed_from"] = str(restore_checkpoint_path)
+        config["resume_compatibility"] = resume_compatibility
+    if output is not None:
+        output_dir = Path(output)
+    elif resume_run_dir is not None:
+        output_dir = resume_run_dir
+    else:
+        output_dir = default_run_dir(label, preset_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     # Orbax requires absolute checkpoint paths.
     output_dir = output_dir.resolve()
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if task_contract_envelope is not None and task_contract_ref is not None:
+        snapshot = output_dir / (
+            f"task_contract.{str(task_contract_ref['sha256'])[:12]}.frozen.json"
+        )
+        save_json(snapshot, task_contract_envelope)
+        task_contract_ref["snapshot_path"] = str(snapshot)
     env = load_env(
         env_name,
         config_overrides=_training_env_overrides(config, evaluation=False),
@@ -559,35 +726,71 @@ def train_ppo(
             "env_ref": str(env_name),
             "runtime": runtime_manifest(),
             "provenance": training_provenance(env_name, env, jax=jax),
+            "task_contract": task_contract_ref,
+            "evaluator": evaluator_manifest,
         }
     )
 
-    def progress(num_steps: int, metrics: dict[str, Any]) -> None:
-        reward = float(metrics.get("eval/episode_reward", 0.0))
-        length = float(metrics.get("eval/avg_episode_length", 0.0))
-        print(f"steps={num_steps:,} eval_reward={reward:.3f} eval_length={length:.1f}")
+    started = time.monotonic()
+    writer = maybe_tensorboard_writer(output_dir)
+    target_steps = int(config["timesteps"])
+    gpu_count = _provenance_gpu_count(config["provenance"])
+    compute = task_contract.get("compute", {}) if task_contract is not None else {}
+    monitor = AbortMonitor(compute.get("abort_rules") if isinstance(compute, Mapping) else None)
 
+    def progress(num_steps: int, metrics: dict[str, Any]) -> None:
+        elapsed_sec = time.monotonic() - started
+        payload = record_progress(
+            output_dir,
+            num_steps=num_steps,
+            timesteps=target_steps,
+            metrics=metrics,
+            elapsed_sec=elapsed_sec,
+            writer=writer,
+        )
+        reward = float((payload.get("metrics") or {}).get("eval/episode_reward", 0.0))
+        length = float((payload.get("metrics") or {}).get("eval/avg_episode_length", 0.0))
+        print(f"steps={num_steps:,} eval_reward={reward:.3f} eval_length={length:.1f}")
+        if task_contract is not None:
+            enforce_runtime_budget(
+                task_contract,
+                elapsed_sec=elapsed_sec,
+                gpu_count=gpu_count,
+            )
+            reason = monitor.observe(num_steps=num_steps, metrics=metrics)
+            if reason is not None:
+                raise TrainingBudgetExceeded(reason)
+
+    command = [
+        sys.executable,
+        "-m",
+        "simrig.cli",
+        "train",
+        str(env_name),
+        "--preset",
+        preset_name,
+        "--impl",
+        config["impl"],
+        "--seed",
+        str(seed),
+        "--output",
+        str(output_dir),
+    ]
+    if restore_checkpoint_path is not None:
+        command.extend(["--resume", str(restore_checkpoint_path)])
+    if allow_resume_mismatch:
+        command.append("--allow-resume-mismatch")
+    if task_contract_path is not None:
+        command.extend(["--contract", str(Path(task_contract_path).expanduser().resolve())])
+    if contract_compatibility != "exact":
+        command.extend(["--contract-compatibility", contract_compatibility])
     run_config = RunConfig(
         env_name=label,
         backend=backend,
         preset=preset_name,
         output_dir=str(output_dir),
         config=config,
-        command=[
-            sys.executable,
-            "-m",
-            "simrig.cli",
-            "train",
-            str(env_name),
-            "--preset",
-            preset_name,
-            "--impl",
-            config["impl"],
-            "--seed",
-            str(seed),
-            "--output",
-            str(output_dir),
-        ],
+        command=command,
     )
     if not domain_randomization:
         run_config.command.append("--no-domain-randomization")
@@ -599,26 +802,258 @@ def train_ppo(
         if overrides is not None and key in overrides:
             run_config.command.extend([flag, str(overrides[key])])
     save_json(output_dir / "config.json", run_config)
+    start_run_manifest(run_config, task_contract=task_contract_ref)
     train_kwargs = {
         key: config[key]
         for key in _PPO_CONFIG_KEYS
         if key in config
     }
-    _, params, metrics = ppo.train(
-        environment=env,
-        eval_env=eval_env,
-        wrap_env_fn=wrapper.wrap_for_brax_training,
-        num_timesteps=config["timesteps"],
-        seed=seed,
-        randomization_fn=randomizer,
-        network_factory=network_factory,
-        progress_fn=progress,
-        save_checkpoint_path=str(checkpoint_dir),
-        **train_kwargs,
-    )
+    if restore_checkpoint_path is not None:
+        train_kwargs["restore_checkpoint_path"] = str(restore_checkpoint_path)
+    try:
+        _, params, metrics = ppo.train(
+            environment=env,
+            eval_env=eval_env,
+            wrap_env_fn=wrapper.wrap_for_brax_training,
+            num_timesteps=config["timesteps"],
+            seed=seed,
+            randomization_fn=randomizer,
+            network_factory=network_factory,
+            progress_fn=progress,
+            save_checkpoint_path=str(checkpoint_dir),
+            **train_kwargs,
+        )
+    except BaseException as exc:
+        status = "aborted" if isinstance(exc, TrainingBudgetExceeded) else "failed"
+        finish_run_manifest(
+            output_dir,
+            status=status,
+            elapsed_sec=time.monotonic() - started,
+            failure=exc,
+            gpu_hourly_cost=_gpu_hourly_cost(compute),
+        )
+        raise
+    finally:
+        close = getattr(writer, "close", None)
+        if callable(close):
+            close()
     brax_model.save_params(str(output_dir / "policy.params"), params)
     save_json(output_dir / "final_metrics.json", metrics)
+    finish_run_manifest(
+        output_dir,
+        status="completed",
+        elapsed_sec=time.monotonic() - started,
+        gpu_hourly_cost=_gpu_hourly_cost(compute),
+    )
     return run_config
+
+
+def _verify_task_contract_target(
+    contract: Mapping[str, Any],
+    *,
+    env_name: str,
+    backend: str,
+    contract_path: Path,
+) -> None:
+    environment = contract.get("environment")
+    if not isinstance(environment, Mapping):
+        raise ValueError("Task contract environment section is missing.")
+    expected_backend = str(environment.get("backend"))
+    if expected_backend != backend:
+        raise ValueError(
+            f"Task contract backend mismatch: contract={expected_backend!r} active={backend!r}"
+        )
+    expected_ref = str(environment.get("ref"))
+    if _same_env_ref(expected_ref, env_name, contract_path=contract_path):
+        return
+    raise ValueError(
+        f"Task contract environment mismatch: contract={expected_ref!r} active={env_name!r}"
+    )
+
+
+def _same_env_ref(expected: str, active: str, *, contract_path: Path) -> bool:
+    if expected == str(active):
+        return True
+    if not (expected.endswith(".py") and str(active).endswith(".py")):
+        return False
+    expected_path = Path(expected).expanduser()
+    if not expected_path.is_absolute():
+        candidates = [contract_path.parent / expected_path, Path.cwd() / expected_path]
+    else:
+        candidates = [expected_path]
+    active_path = Path(str(active)).expanduser().resolve()
+    return any(candidate.resolve() == active_path for candidate in candidates)
+
+
+def _provenance_gpu_count(provenance: Any) -> int:
+    if not isinstance(provenance, Mapping):
+        return 0
+    jax_info = provenance.get("jax")
+    devices = jax_info.get("devices") if isinstance(jax_info, Mapping) else None
+    if not isinstance(devices, list):
+        return 0
+    return sum(
+        str(device.get("platform", "")).lower() in {"cuda", "gpu", "rocm"}
+        for device in devices
+        if isinstance(device, Mapping)
+    )
+
+
+def _gpu_hourly_cost(compute: Any) -> float | None:
+    if not isinstance(compute, Mapping):
+        return None
+    value = compute.get("gpu_hourly_cost")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _latest_orbax_checkpoint(checkpoint_dir: Path) -> Path:
+    """Prefer a numbered Orbax step dir over the checkpoints/ parent."""
+    numbered = sorted(
+        (path for path in checkpoint_dir.iterdir() if path.is_dir() and path.name.isdigit()),
+        key=lambda path: int(path.name),
+    )
+    return numbered[-1] if numbered else checkpoint_dir
+
+
+def _resolve_resume_target(path: Path | str) -> tuple[Path, Path]:
+    """Return ``(run_dir, checkpoint_dir)`` for a resume path."""
+    target = Path(path).expanduser().resolve()
+    if not target.exists():
+        raise FileNotFoundError(f"Resume path not found: {target}")
+    if (target / "checkpoints").is_dir():
+        run_dir = target
+        checkpoint_dir = _latest_orbax_checkpoint(target / "checkpoints")
+    elif target.is_dir() and target.name == "checkpoints":
+        run_dir = target.parent
+        checkpoint_dir = _latest_orbax_checkpoint(target)
+    elif (
+        target.is_dir()
+        and target.name.isdigit()
+        and target.parent.name == "checkpoints"
+        and (target.parent.parent / "config.json").is_file()
+    ):
+        run_dir = target.parent.parent
+        checkpoint_dir = target
+    elif target.is_dir() and (target.parent / "config.json").is_file():
+        run_dir = target.parent
+        checkpoint_dir = target
+    else:
+        raise FileNotFoundError(
+            f"Resume path must be a run directory or checkpoints/ folder: {target}"
+        )
+    if not any(checkpoint_dir.glob("**/*")):
+        raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
+    return run_dir, checkpoint_dir
+
+
+def _verify_resume_compatibility(
+    run_dir: Path,
+    *,
+    env_name: str,
+    config: dict[str, Any],
+    allow_mismatch: bool,
+    active_task_contract: Mapping[str, Any] | None = None,
+    contract_policy: str = "exact",
+) -> dict[str, Any]:
+    recorded = checkpoint_config(run_dir / "policy.params") or {}
+    config_path = run_dir / "config.json"
+    if not recorded and config_path.is_file():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        nested = data.get("config") if isinstance(data, dict) else None
+        recorded = nested if isinstance(nested, dict) else {}
+        if isinstance(data, dict) and "env_name" in data:
+            recorded.setdefault("env_ref", data["env_name"])
+    mismatches: list[str] = []
+    recorded_env = str(recorded.get("env_ref") or "")
+    if recorded_env and resolve_env_label(recorded_env) != resolve_env_label(env_name):
+        mismatches.append(
+            f"env {recorded_env!r} vs {env_name!r}"
+        )
+    recorded_network = recorded.get("network_type")
+    if recorded_network and recorded_network != config.get("network_type"):
+        mismatches.append(
+            f"network {recorded_network!r} vs {config.get('network_type')!r}"
+        )
+    recorded_impl = recorded.get("impl")
+    if recorded_impl and recorded_impl != config.get("impl"):
+        mismatches.append(f"impl {recorded_impl!r} vs {config.get('impl')!r}")
+    recorded_contract = recorded.get("task_contract")
+    active_contract = config.get("task_contract")
+    recorded_hash = (
+        recorded_contract.get("sha256")
+        if isinstance(recorded_contract, Mapping)
+        else None
+    )
+    active_hash = (
+        active_contract.get("sha256")
+        if isinstance(active_contract, Mapping)
+        else None
+    )
+    if recorded_hash != active_hash and (recorded_hash is not None or active_hash is not None):
+        contract_result: dict[str, Any] | None = None
+        if contract_policy != "exact" and active_task_contract is not None:
+            recorded_task_contract = _load_recorded_task_contract(run_dir, recorded_contract)
+            if recorded_task_contract is not None:
+                contract_result = compare_task_contracts(
+                    recorded_task_contract,
+                    active_task_contract,
+                    policy=contract_policy,
+                )
+        if contract_result is None or not contract_result["compatible"]:
+            mismatches.append(
+                f"task contract {recorded_hash or 'unrecorded'!r} vs "
+                f"{active_hash or 'unrecorded'!r} under policy {contract_policy!r}"
+            )
+    else:
+        contract_result = {
+            "policy": contract_policy,
+            "compatible": True,
+            "left_sha256": recorded_hash,
+            "right_sha256": active_hash,
+            "changes": [],
+            "incompatible_changes": [],
+        }
+    if mismatches and not allow_mismatch:
+        raise RuntimeError(
+            "Resume checkpoint is not compatible with this command: "
+            + "; ".join(mismatches)
+            + ". Pass --allow-resume-mismatch to continue anyway."
+        )
+    return {
+        "compatible": not mismatches,
+        "allow_mismatch": allow_mismatch,
+        "mismatches": mismatches,
+        "contract": contract_result,
+    }
+
+
+def _load_recorded_task_contract(
+    run_dir: Path,
+    recorded_ref: Any,
+) -> dict[str, Any] | None:
+    candidates: list[Path] = []
+    if isinstance(recorded_ref, Mapping):
+        for key in ("snapshot_path", "path"):
+            value = recorded_ref.get(key)
+            if value:
+                candidates.append(Path(str(value)).expanduser())
+        sha = recorded_ref.get("sha256")
+        if sha:
+            candidates.append(run_dir / f"task_contract.{str(sha)[:12]}.frozen.json")
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            contract, _ = load_task_contract(path)
+        except (OSError, ValueError):
+            continue
+        return contract
+    return None
 
 
 def _resolve_domain_randomizer(env_name: str, env: Any) -> Any | None:
@@ -649,54 +1084,49 @@ def eval_policy(
     allow_runtime_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Headless deterministic policy rollout."""
-    _validate_backend(backend)
-    runtime = verify_checkpoint_runtime(
-        checkpoint,
-        allow_mismatch=allow_runtime_mismatch,
+    from simrig.rollout import PolicyRuntime
+    from simrig.evaluation_suite import artifact_sha256
+
+    if type(steps) is not int or steps < 1:
+        raise ValueError("steps must be a positive integer")
+    rollout = PolicyRuntime(
+        checkpoint, env_name=env_name, backend=backend, small_network=small_network,
+        allow_runtime_mismatch=allow_runtime_mismatch,
     )
-    _ensure_checkpoint_vision_runtime(checkpoint)
-    jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
-    env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
-    network_config = resolve_network_factory(checkpoint, small_network=small_network)
-    network_factory = make_network_factory(
-        resolve_network_type(checkpoint),
-        network_config,
-        ppo_networks=ppo_networks,
-    )
-    networks = network_factory(
-        env.observation_size,
-        env.action_size,
-        preprocess_observations_fn=running_statistics.normalize,
-    )
-    params = brax_model.load_params(str(checkpoint))
-    policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
-    reset = jax.jit(env.reset)
-    step = jax.jit(env.step)
-    rng = jax.random.PRNGKey(seed)
-    state = reset(rng)
-    command_applied = False
-    if command is not None:
-        state, command_applied = _apply_command(env, state, jp.asarray(command))
-        if not command_applied:
-            raise ValueError(
-                f"Environment {resolve_env_label(env_name)} does not expose command-like state."
-            )
+    env = rollout.env
+    state, rng = rollout.reset(seed)
+    state = rollout.apply_command(state, command)
+    command_applied = command is not None
     total_reward = 0.0
     completed = 0
-    for completed in range(1, steps + 1):
-        if command is not None:
-            state, command_applied = _apply_command(env, state, jp.asarray(command))
-        rng, action_rng = jax.random.split(rng)
-        action, _ = policy(state.obs, action_rng)
-        state = step(state, action)
-        total_reward += float(state.reward)
-        if bool(state.done):
-            break
+    success_spec = load_success_spec(env_name, env)
+    success_values: list[float] = []
+    try:
+        for completed in range(1, steps + 1):
+            state, rng, _ = rollout.advance(state, rng, command=command)
+            total_reward += float(state.reward)
+            sample = collect_success_value(state, success_spec or None)
+            if sample is not None:
+                success_values.append(sample)
+            if bool(state.done):
+                break
+    finally:
+        rollout.close()
     completed_requested_steps = completed == steps and not bool(state.done)
+    task_success, task_success_reason = evaluate_task_success(
+        success_values,
+        success_spec or None,
+    )
     return {
         "env_name": resolve_env_label(env_name),
         "backend": backend,
-        "checkpoint": str(checkpoint),
+        "checkpoint": str(rollout.checkpoint),
+        "checkpoint_sha256": artifact_sha256(rollout.checkpoint),
+        "checkpoint_config_sha256": (
+            artifact_sha256(checkpoint_config_path(rollout.checkpoint))
+            if checkpoint_config_path(rollout.checkpoint).is_file() else None
+        ),
+        "environment": env_name,
         "seed": seed,
         "command": list(command) if command is not None else None,
         "command_applied": command_applied,
@@ -706,12 +1136,9 @@ def eval_policy(
         "average_reward": total_reward / max(completed, 1),
         "terminated": bool(state.done),
         "completed_requested_steps": completed_requested_steps,
-        "task_success": None,
-        "task_success_reason": (
-            "No task-specific success evaluator is configured; rollout completion and "
-            "reward do not prove command tracking or task success."
-        ),
-        "runtime_compatibility": runtime,
+        "task_success": task_success,
+        "task_success_reason": task_success_reason,
+        "runtime_compatibility": rollout.runtime_compatibility,
     }
 
 
@@ -729,10 +1156,12 @@ def demo_policy(
     allow_runtime_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Run a trained policy in a desktop MuJoCo viewer."""
-    _validate_backend(backend)
-    verify_checkpoint_runtime(checkpoint, allow_mismatch=allow_runtime_mismatch)
-    _ensure_checkpoint_vision_runtime(checkpoint)
-    jax, jp, brax_model, running_statistics, ppo_networks, *_ = _import_training_deps()
+    from simrig.rollout import PolicyRuntime
+
+    rollout = PolicyRuntime(
+        checkpoint, env_name=env_name, backend=backend, small_network=small_network,
+        allow_runtime_mismatch=allow_runtime_mismatch,
+    )
     try:
         import mujoco  # type: ignore
         from gymnasium.envs.mujoco.mujoco_rendering import WindowViewer  # type: ignore
@@ -741,27 +1170,10 @@ def demo_policy(
             "Interactive demo requires MuJoCo and Gymnasium's MuJoCo viewer."
         ) from exc
 
-    env = load_env(env_name, config_overrides=_checkpoint_env_overrides(checkpoint))
-    network_config = resolve_network_factory(checkpoint, small_network=small_network)
-    network_factory = make_network_factory(
-        resolve_network_type(checkpoint),
-        network_config,
-        ppo_networks=ppo_networks,
-    )
-    networks = network_factory(
-        env.observation_size,
-        env.action_size,
-        preprocess_observations_fn=running_statistics.normalize,
-    )
-    params = brax_model.load_params(str(checkpoint))
-    policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
-    reset = jax.jit(env.reset)
-    step = jax.jit(env.step)
-    rng = jax.random.PRNGKey(seed)
-    state = reset(rng)
-    command_applied = False
-    if command is not None:
-        state, command_applied = _apply_command(env, state, jp.asarray(command))
+    env = rollout.env
+    state, rng = rollout.reset(seed)
+    state = rollout.apply_command(state, command)
+    command_applied = command is not None
 
     mj_data = mujoco.MjData(env.mj_model)
     viewer = WindowViewer(env.mj_model, mj_data, width=None, height=None, max_geom=1000)
@@ -772,11 +1184,7 @@ def demo_policy(
     completed = 0
     try:
         for completed in range(1, steps + 1):
-            if command is not None:
-                state, command_applied = _apply_command(env, state, jp.asarray(command))
-            rng, action_rng = jax.random.split(rng)
-            action, _ = policy(state.obs, action_rng)
-            state = step(state, action)
+            state, rng, _ = rollout.advance(state, rng, command=command)
             total_reward += float(state.reward)
 
             mj_data.qpos = state.data.qpos
@@ -795,6 +1203,7 @@ def demo_policy(
                 break
     finally:
         viewer.close()
+        rollout.close()
 
     return {
         "env_name": resolve_env_label(env_name),

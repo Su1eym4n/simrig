@@ -267,7 +267,10 @@ def _runtime_checks(
         return missing, warnings, notes, False, vision_details
 
     try:
+        from simrig.rollout import validate_state
+
         state = env.reset(jax.random.PRNGKey(0))
+        validate_state(state, observation_size)
         obs = getattr(state, "obs", None)
         if isinstance(obs, dict):
             if "state" not in obs:
@@ -285,6 +288,7 @@ def _runtime_checks(
         if action_size is None:
             return missing, warnings, notes, False, vision_details
         next_state = env.step(state, jp.zeros(int(action_size)))
+        validate_state(next_state, observation_size)
         vision_missing, vision_warnings, vision_details = _vision_runtime_checks(
             env,
             obs,

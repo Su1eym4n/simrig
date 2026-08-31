@@ -13,6 +13,7 @@ from simrig.preview import (
     _checkpoint_episode_horizon,
     _episode_horizon,
     _frame_html,
+    _preview_outcome,
     _rate_hz,
     _threejs_html,
 )
@@ -24,6 +25,21 @@ class _State:
 
 
 class PreviewMetadataTests(unittest.TestCase):
+    def test_ended_episode_can_succeed_fail_or_have_unknown_outcome(self):
+        for values, expected in (([0.0, 1.0], True), ([0.0, 0.0], False), ([], None), ([None], None), ([np.nan], None)):
+            with self.subTest(values=values):
+                outcome, _ = _preview_outcome(values, {}, done=True)
+                self.assertIs(outcome, expected)
+        self.assertIsNone(_preview_outcome([1.0], {}, done=False)[0])
+
+    def test_missing_metrics_do_not_count_as_failure_or_complete_a_hold(self):
+        spec = {"metric": "arrived", "mode": "hold", "hold_steps": 2}
+        self.assertIsNone(_preview_outcome([1.0, None, 1.0], spec, done=True)[0])
+        self.assertIsNone(_preview_outcome([], spec, done=True)[0])
+        self.assertFalse(_preview_outcome([1.0, 0.0, 1.0], spec, done=True)[0])
+        self.assertTrue(_preview_outcome([0.0, 1.0, 1.0], spec, done=True)[0])
+        self.assertFalse(_preview_outcome([1.0, 0.0], {"mode": "last"}, done=True)[0])
+
     def test_non_command_environment_has_no_controls(self) -> None:
         self.assertEqual(_command_controls(object(), _State({})), [])
 

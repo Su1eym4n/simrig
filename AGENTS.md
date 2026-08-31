@@ -40,6 +40,5 @@ reset/step correctly.
 - Do not infer rewards, observations, or termination from model names alone.
 - Do not invent a complete reward function just to make `new-env` look done.
 - Run smoke tests before long training runs.
-- Use `smoke` preset before `local` or `cloud`.
-- Do not copy Cortex, AXIS, Daionics, or project-specific research logic into
-  generic SimRig code.
+- Use `smoke` preset before `local` or `large`.
+- `--preset large` is PPO scale. `simrig remote` is SSH to another Linux GPU.

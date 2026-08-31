@@ -11,16 +11,30 @@ from typing import Any
 from simrig._version import __version__
 from simrig.core import report_markdown, to_dict
 from simrig.huggingface import resolve_policy_checkpoint
+from simrig.evaluation_suite import (
+    EvaluationLimits,
+    evaluate_checkpoint_directory,
+    run_evaluation_suite,
+)
+from simrig.gates import (
+    adversarial_reward_probes,
+    audit_reward_alignment,
+    evaluate_gate,
+    load_evaluation_records,
+)
 from simrig.io import save_json, save_report_pair, slugify
-from simrig.lambda_cloud import (
-    LambdaSSHConfig,
-    check_lambda,
-    connect_lambda,
-    fetch_lambda,
-    prepare_lambda,
-    smoke_lambda,
-    status_lambda,
-    train_lambda,
+from simrig.presets import canonical_preset
+from simrig.progress import describe_run
+from simrig.ranking import load_suite_reports, rank_checkpoints
+from simrig.remote import (
+    SSHConfig,
+    check_remote,
+    connect_remote,
+    fetch_remote,
+    prepare_remote,
+    smoke_remote,
+    status_remote,
+    train_remote,
 )
 from simrig.mujoco_backend import inspect_model, list_models
 from simrig.paths import ensure_project_dirs
@@ -33,6 +47,17 @@ from simrig.playground_backend import (
     train_ppo,
 )
 from simrig.scaffold import new_env
+from simrig.task_contract import (
+    COMPATIBILITY_POLICIES,
+    SCHEMA_VERSION,
+    compare_task_contracts,
+    diff_task_contracts,
+    load_task_contract,
+    save_migrated_task_contract,
+    save_frozen_task_contract,
+    task_contract_template,
+    validate_task_contract,
+)
 from simrig.validate_env import validate_env
 
 
@@ -58,6 +83,56 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="Create local SimRig output folders.")
     init.add_argument("--root", type=Path, default=Path("."))
     init.set_defaults(func=_cmd_init)
+
+    task_parser = sub.add_parser(
+        "task",
+        help="Create, validate, freeze, and compare task contracts.",
+    )
+    task_actions = task_parser.add_subparsers(dest="task_action", required=True)
+    task_init = task_actions.add_parser("init", help="Create an editable task contract.")
+    task_init.add_argument("env_name", help="Environment name or custom *.py module.")
+    task_init.add_argument("--name", help="Stable task name; defaults to the environment label.")
+    task_init.add_argument("--output", type=Path, default=Path("task.json"))
+    task_init.set_defaults(func=_cmd_task_init)
+
+    task_validate = task_actions.add_parser(
+        "validate", help="Validate a draft or frozen task contract."
+    )
+    task_validate.add_argument("path", type=Path)
+    task_validate.add_argument("--json", action="store_true")
+    task_validate.set_defaults(func=_cmd_task_validate)
+
+    task_freeze = task_actions.add_parser(
+        "freeze", help="Validate and freeze a task contract with a content hash."
+    )
+    task_freeze.add_argument("path", type=Path)
+    task_freeze.add_argument("--output", type=Path)
+    task_freeze.set_defaults(func=_cmd_task_freeze)
+
+    task_diff = task_actions.add_parser(
+        "diff", help="Compare task-contract semantics independent of formatting."
+    )
+    task_diff.add_argument("left", type=Path)
+    task_diff.add_argument("right", type=Path)
+    task_diff.add_argument("--json", action="store_true")
+    task_diff.set_defaults(func=_cmd_task_diff)
+
+    task_migrate = task_actions.add_parser(
+        "migrate", help="Explicitly migrate an older contract to the current draft schema."
+    )
+    task_migrate.add_argument("path", type=Path)
+    task_migrate.add_argument("--output", type=Path, required=True)
+    task_migrate.add_argument("--json", action="store_true")
+    task_migrate.set_defaults(func=_cmd_task_migrate)
+
+    task_compat = task_actions.add_parser(
+        "compatibility", help="Compare contracts under an explicit compatibility policy."
+    )
+    task_compat.add_argument("left", type=Path)
+    task_compat.add_argument("right", type=Path)
+    task_compat.add_argument("--policy", choices=sorted(COMPATIBILITY_POLICIES), required=True)
+    task_compat.add_argument("--json", action="store_true")
+    task_compat.set_defaults(func=_cmd_task_compatibility)
 
     list_models_parser = sub.add_parser("list-models", help="List MuJoCo Menagerie models.")
     list_models_parser.add_argument("--menagerie", type=Path)
@@ -106,8 +181,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Playground env name or path to a custom *.py env module.",
     )
     train_parser.add_argument("--backend", default="mujoco-playground")
-    train_parser.add_argument("--preset", choices=("smoke", "local", "cloud"), default="smoke")
+    train_parser.add_argument(
+        "--preset",
+        type=_parse_preset,
+        default="smoke",
+        help="PPO scale: smoke, local, or large. `cloud` is a hidden alias for large.",
+    )
     train_parser.add_argument("--output", type=Path)
+    train_parser.add_argument(
+        "--contract",
+        type=Path,
+        help="Frozen task contract used to bound and identify this run.",
+    )
+    train_parser.add_argument(
+        "--contract-compatibility",
+        choices=("exact", "training_resume"),
+        default="exact",
+        help="Compatibility policy when resuming under a different frozen contract.",
+    )
     train_parser.add_argument("--timesteps", type=int)
     train_parser.add_argument("--num-envs", type=int)
     train_parser.add_argument("--batch-size", type=int)
@@ -123,6 +214,15 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use the environment's declared domain randomizer when available.",
+    )
+    train_parser.add_argument(
+        "--resume",
+        help="Run directory or checkpoints/ path to restore Brax/Orbax weights from.",
+    )
+    train_parser.add_argument(
+        "--allow-resume-mismatch",
+        action="store_true",
+        help="Allow resume when recorded env/network/impl differ from this command.",
     )
     train_parser.set_defaults(func=_cmd_train)
 
@@ -157,7 +257,76 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow an explicitly qualitative rollout when recorded runtime versions differ.",
     )
     eval_parser.add_argument("--json", action="store_true")
+    eval_parser.add_argument("--output", type=Path, help="Explicit report path; defaults to a unique trial report.")
     eval_parser.set_defaults(func=_cmd_eval)
+
+    gate_parser = sub.add_parser(
+        "gate",
+        help="Apply a frozen task contract's independent promotion suite to reports.",
+    )
+    gate_parser.add_argument("reports", type=Path, nargs="+")
+    gate_parser.add_argument("--contract", type=Path, required=True)
+    gate_parser.add_argument("--suite", default="nominal")
+    gate_parser.add_argument("--output", type=Path)
+    gate_parser.add_argument("--json", action="store_true")
+    gate_parser.set_defaults(func=_cmd_gate)
+
+    reward_audit_parser = sub.add_parser(
+        "reward-audit",
+        help="Check whether reward agrees with independent success outcomes.",
+    )
+    reward_audit_parser.add_argument("reports", type=Path, nargs="+")
+    reward_audit_parser.add_argument("--reward-metric", default="total_reward")
+    reward_audit_parser.add_argument("--success-metric", default="task_success")
+    reward_audit_parser.add_argument("--output", type=Path)
+    reward_audit_parser.add_argument("--json", action="store_true")
+    reward_audit_parser.set_defaults(func=_cmd_reward_audit)
+
+    reward_probe_parser = sub.add_parser(
+        "reward-probe",
+        help="Find concrete high-reward failures across independent evaluation reports.",
+    )
+    reward_probe_parser.add_argument("reports", type=Path, nargs="+")
+    reward_probe_parser.add_argument("--reward-metric", default="total_reward")
+    reward_probe_parser.add_argument("--success-metric", default="task_success")
+    reward_probe_parser.add_argument("--output", type=Path)
+    reward_probe_parser.add_argument("--json", action="store_true")
+    reward_probe_parser.set_defaults(func=_cmd_reward_probe)
+
+    eval_suite_parser = sub.add_parser(
+        "eval-suite",
+        help="Run a frozen contract's independent scenario-by-seed evaluation matrix.",
+    )
+    eval_suite_parser.add_argument("checkpoint")
+    eval_suite_parser.add_argument("--contract", type=Path, required=True)
+    eval_suite_parser.add_argument("--suite", default="nominal")
+    eval_suite_parser.add_argument("--evaluator", type=Path)
+    eval_suite_parser.add_argument("--output", type=Path)
+    _add_eval_limit_args(eval_suite_parser)
+    eval_suite_parser.add_argument("--json", action="store_true")
+    eval_suite_parser.set_defaults(func=_cmd_eval_suite)
+
+    eval_checkpoints_parser = sub.add_parser(
+        "eval-checkpoints",
+        help="Boundedly evaluate checkpoints currently available in a run directory.",
+    )
+    eval_checkpoints_parser.add_argument("run_dir", type=Path)
+    eval_checkpoints_parser.add_argument("--contract", type=Path, required=True)
+    eval_checkpoints_parser.add_argument("--suite", default="nominal")
+    eval_checkpoints_parser.add_argument("--evaluator", type=Path)
+    eval_checkpoints_parser.add_argument("--max-checkpoints", type=int, default=1)
+    _add_eval_limit_args(eval_checkpoints_parser)
+    eval_checkpoints_parser.add_argument("--json", action="store_true")
+    eval_checkpoints_parser.set_defaults(func=_cmd_eval_checkpoints)
+
+    rank_parser = sub.add_parser(
+        "rank-checkpoints",
+        help="Rank comparable checkpoints using independent outcomes, never reward.",
+    )
+    rank_parser.add_argument("reports", type=Path, nargs="+")
+    rank_parser.add_argument("--output", type=Path)
+    rank_parser.add_argument("--json", action="store_true")
+    rank_parser.set_defaults(func=_cmd_rank_checkpoints)
 
     demo_parser = sub.add_parser("demo", help="Run a trained policy in a desktop MuJoCo viewer.")
     demo_parser.add_argument("checkpoint")
@@ -182,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     preview_parser.add_argument("checkpoint")
     preview_parser.add_argument("--env", dest="env_name", required=True)
     preview_parser.add_argument("--backend", default="mujoco-playground")
+    preview_parser.add_argument("--seed", type=int, default=0, help="Initial environment and policy rollout seed.")
     preview_parser.add_argument("--host", default="127.0.0.1")
     preview_parser.add_argument("--port", type=int, default=8765)
     preview_parser.add_argument("--width", type=int, default=960)
@@ -281,129 +451,20 @@ def build_parser() -> argparse.ArgumentParser:
     validate_env_parser.add_argument("--json", action="store_true")
     validate_env_parser.set_defaults(func=_cmd_validate_env)
 
-    cloud_parser = sub.add_parser(
-        "cloud",
-        help="Connect to and train on an already-provisioned cloud GPU.",
-    )
-    cloud_providers = cloud_parser.add_subparsers(dest="cloud_provider", required=True)
-    lambda_parser = cloud_providers.add_parser(
-        "lambda",
-        help="Use a Lambda On-Demand Cloud instance over SSH.",
-    )
-    lambda_actions = lambda_parser.add_subparsers(dest="cloud_action", required=True)
-
-    lambda_connect = lambda_actions.add_parser(
-        "connect",
-        help="Open an interactive SSH connection to the instance.",
-    )
-    _add_lambda_connection_args(lambda_connect)
-    lambda_connect.add_argument(
-        "--tunnel-port",
-        type=int,
-        help="Forward this localhost port to the same port on the instance.",
-    )
-    lambda_connect.set_defaults(func=_cmd_lambda_connect)
-
-    lambda_check = lambda_actions.add_parser(
-        "check",
-        help="Check SSH plus NVIDIA and JAX device visibility.",
-    )
-    _add_lambda_connection_args(lambda_check)
-    lambda_check.set_defaults(func=_cmd_lambda_check)
-
-    lambda_prepare = lambda_actions.add_parser(
-        "prepare",
-        help="Sync this checkout and prepare a GPU-enabled remote virtualenv.",
-    )
-    _add_lambda_connection_args(lambda_prepare)
-    lambda_prepare.add_argument("--project", type=Path, default=Path("."))
-    lambda_prepare.add_argument("--remote-dir")
-    lambda_prepare.add_argument(
-        "--jax-cuda",
-        choices=("preinstalled", "cuda12", "cuda13"),
-        default="preinstalled",
-        help="Use Lambda's preinstalled JAX or install a pip CUDA wheel.",
-    )
-    lambda_prepare.add_argument(
-        "--python",
-        dest="python_command",
-        default="python3",
-        help="Remote Python 3.11+ executable used to create the training virtualenv.",
-    )
-    lambda_prepare.set_defaults(func=_cmd_lambda_prepare)
-
-    lambda_smoke = lambda_actions.add_parser(
-        "smoke",
-        help="Run the reset/step environment smoke gate on the remote GPU.",
-    )
-    _add_lambda_connection_args(lambda_smoke)
-    lambda_smoke.add_argument(
-        "env_name",
-        help="Playground env name or synced custom *.py env module path.",
-    )
-    lambda_smoke.add_argument("--remote-dir")
-    lambda_smoke.add_argument("--steps", type=int, default=10)
-    lambda_smoke.set_defaults(func=_cmd_lambda_smoke)
-
-    lambda_train = lambda_actions.add_parser(
-        "train",
-        help="Run training on a prepared Lambda instance (smoke preset by default).",
-    )
-    _add_lambda_connection_args(lambda_train)
-    lambda_train.add_argument(
-        "env_name",
-        help="Playground env name or synced custom *.py env module path.",
-    )
-    lambda_train.add_argument(
-        "--preset",
-        choices=("smoke", "local", "cloud"),
-        default="smoke",
-    )
-    lambda_train.add_argument("--remote-dir")
-    lambda_train.add_argument(
-        "--output",
-        help="Remote run directory, relative to --remote-dir unless absolute.",
-    )
-    lambda_train.add_argument(
-        "--detach",
-        action="store_true",
-        help="Keep training after SSH disconnects and write train.log/train.pid.",
-    )
-    lambda_train.add_argument("--timesteps", type=int)
-    lambda_train.add_argument("--num-envs", type=int)
-    lambda_train.add_argument("--batch-size", type=int)
-    lambda_train.add_argument(
-        "--impl",
-        choices=("auto", "jax", "warp"),
-        default="auto",
-    )
-    lambda_train.add_argument("--seed", type=int, default=0)
-    lambda_train.add_argument(
-        "--domain-randomization",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    lambda_train.set_defaults(func=_cmd_lambda_train)
-
-    lambda_status = lambda_actions.add_parser(
+    status_parser = sub.add_parser(
         "status",
-        help="Show detached process state and recent training log lines.",
+        help="Show process state and progress for a local or fetched run directory.",
     )
-    _add_lambda_connection_args(lambda_status)
-    lambda_status.add_argument("output", help="Remote output returned by cloud lambda train.")
-    lambda_status.add_argument("--remote-dir")
-    lambda_status.add_argument("--lines", type=int, default=30)
-    lambda_status.set_defaults(func=_cmd_lambda_status)
+    status_parser.add_argument("output", type=Path, help="Local run directory.")
+    status_parser.add_argument("--lines", type=int, default=30)
+    status_parser.set_defaults(func=_cmd_status)
 
-    lambda_fetch = lambda_actions.add_parser(
-        "fetch",
-        help="Download a remote run directory into local runs/.",
+    remote_parser = sub.add_parser(
+        "remote",
+        help="SSH to an already-running Linux GPU (workstation, lab box, or cloud VM).",
     )
-    _add_lambda_connection_args(lambda_fetch)
-    lambda_fetch.add_argument("output", help="Remote output returned by cloud lambda train.")
-    lambda_fetch.add_argument("--remote-dir")
-    lambda_fetch.add_argument("--local-output", type=Path)
-    lambda_fetch.set_defaults(func=_cmd_lambda_fetch)
+    remote_actions = remote_parser.add_subparsers(dest="remote_action", required=True)
+    _register_remote_actions(remote_actions)
 
     return parser
 
@@ -412,6 +473,63 @@ def _cmd_init(args: argparse.Namespace) -> None:
     paths = ensure_project_dirs(args.root)
     for path in paths:
         print(path)
+
+
+def _cmd_task_init(args: argparse.Namespace) -> None:
+    if args.output.exists():
+        raise FileExistsError(f"Refusing to overwrite task contract: {args.output}")
+    contract = task_contract_template(args.env_name, name=args.name)
+    path = save_json(args.output, contract)
+    print(path)
+    print("Edit every TODO and set a positive episode horizon before freezing.")
+
+
+def _cmd_task_validate(args: argparse.Namespace) -> int:
+    contract, envelope = load_task_contract(args.path)
+    result = validate_task_contract(contract)
+    payload = {
+        "path": str(args.path),
+        "frozen": envelope is not None,
+        "passed": result.passed,
+        "sha256": result.sha256,
+        "errors": result.errors,
+        "warnings": result.warnings,
+    }
+    _print(payload, as_json=args.json)
+    return 0 if result.passed else 1
+
+
+def _cmd_task_freeze(args: argparse.Namespace) -> None:
+    path = save_frozen_task_contract(args.path, output=args.output)
+    print(path)
+
+
+def _cmd_task_diff(args: argparse.Namespace) -> int:
+    left, _ = load_task_contract(args.left)
+    right, _ = load_task_contract(args.right)
+    changes = diff_task_contracts(left, right)
+    payload = {
+        "equal": not changes,
+        "changes": changes,
+    }
+    _print(payload, as_json=args.json)
+    return 0 if not changes else 1
+
+
+def _cmd_task_migrate(args: argparse.Namespace) -> None:
+    path, steps = save_migrated_task_contract(args.path, output=args.output)
+    _print(
+        {"path": str(path), "schema_version": SCHEMA_VERSION, "migration_steps": steps},
+        as_json=args.json,
+    )
+
+
+def _cmd_task_compatibility(args: argparse.Namespace) -> int:
+    left, _ = load_task_contract(args.left)
+    right, _ = load_task_contract(args.right)
+    result = compare_task_contracts(left, right, policy=args.policy)
+    _print(result, as_json=args.json)
+    return 0 if result["compatible"] else 1
 
 
 def _cmd_list_models(args: argparse.Namespace) -> None:
@@ -466,6 +584,10 @@ def _cmd_train(args: argparse.Namespace) -> None:
         impl=args.impl,
         seed=args.seed,
         domain_randomization=args.domain_randomization,
+        resume=args.resume,
+        allow_resume_mismatch=args.allow_resume_mismatch,
+        task_contract_path=args.contract,
+        contract_compatibility=args.contract_compatibility,
     )
     print(f"saved run: {run_config.output_dir}")
 
@@ -487,7 +609,82 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         command=command,
         allow_runtime_mismatch=args.allow_runtime_mismatch,
     )
-    save_json(Path("reports") / f"{slugify(args.env_name)}_eval.json", result)
+    from simrig.io import unique_report_path
+
+    output = args.output or unique_report_path(f"{args.env_name}-{Path(checkpoint).name}-seed-{args.seed}")
+    result["report_path"] = str(output.resolve())
+    save_json(output, result)
+    _print(result, as_json=args.json)
+
+
+def _cmd_gate(args: argparse.Namespace) -> int:
+    contract, _ = load_task_contract(args.contract, require_frozen=True)
+    records = load_evaluation_records(args.reports)
+    result = evaluate_gate(contract, suite_name=args.suite, records=records)
+    if args.output is not None:
+        save_json(args.output, result)
+    _print(result, as_json=args.json)
+    return 0 if result["passed"] else 1
+
+
+def _cmd_reward_audit(args: argparse.Namespace) -> int:
+    records = load_evaluation_records(args.reports)
+    result = audit_reward_alignment(
+        records,
+        reward_metric=args.reward_metric,
+        success_metric=args.success_metric,
+    )
+    if args.output is not None:
+        save_json(args.output, result)
+    _print(result, as_json=args.json)
+    return 0 if result["passed"] else 1
+
+
+def _cmd_reward_probe(args: argparse.Namespace) -> int:
+    records = load_evaluation_records(args.reports)
+    result = adversarial_reward_probes(
+        records,
+        reward_metric=args.reward_metric,
+        success_metric=args.success_metric,
+    )
+    if args.output is not None:
+        save_json(args.output, result)
+    _print(result, as_json=args.json)
+    return 0 if result["passed"] else 1
+
+
+def _cmd_eval_suite(args: argparse.Namespace) -> int:
+    result = run_evaluation_suite(
+        args.checkpoint,
+        contract_path=args.contract,
+        suite_name=args.suite,
+        evaluator_path=args.evaluator,
+        limits=_evaluation_limits(args),
+    )
+    from simrig.io import unique_report_path
+
+    output = args.output or unique_report_path(f"{Path(args.checkpoint).name}-{args.suite}-eval-suite")
+    save_json(output, result)
+    _print(result, as_json=args.json)
+    return 0 if result["passed"] else 1
+
+
+def _cmd_eval_checkpoints(args: argparse.Namespace) -> None:
+    result = evaluate_checkpoint_directory(
+        args.run_dir,
+        contract_path=args.contract,
+        suite_name=args.suite,
+        evaluator_path=args.evaluator,
+        max_checkpoints=args.max_checkpoints,
+        limits=_evaluation_limits(args, bounded_defaults=True),
+    )
+    _print(result, as_json=args.json)
+
+
+def _cmd_rank_checkpoints(args: argparse.Namespace) -> None:
+    result = rank_checkpoints(load_suite_reports(args.reports))
+    if args.output is not None:
+        save_json(args.output, result)
     _print(result, as_json=args.json)
 
 
@@ -541,6 +738,7 @@ def _cmd_preview(args: argparse.Namespace) -> None:
         checkpoint,
         env_name=args.env_name,
         backend=args.backend,
+        seed=args.seed,
         host=args.host,
         port=args.port,
         width=args.width,
@@ -576,20 +774,187 @@ def _cmd_validate_env(args: argparse.Namespace) -> int:
     return 0 if result.passed else 1
 
 
-def _add_lambda_connection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("host", help="Public IP address or DNS name from Lambda Cloud.")
+def _cmd_status(args: argparse.Namespace) -> None:
+    print(describe_run(args.output, lines=args.lines))
+
+
+def _add_eval_limit_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-scenarios", type=int)
+    parser.add_argument("--max-seeds-per-scenario", type=int)
+    parser.add_argument("--max-evaluations", type=int)
+
+
+def _evaluation_limits(
+    args: argparse.Namespace,
+    *,
+    bounded_defaults: bool = False,
+) -> EvaluationLimits:
+    return EvaluationLimits(
+        max_scenarios=args.max_scenarios or (1 if bounded_defaults else None),
+        max_seeds_per_scenario=args.max_seeds_per_scenario
+        or (1 if bounded_defaults else None),
+        max_evaluations=args.max_evaluations or (1 if bounded_defaults else None),
+    )
+
+
+def _parse_preset(value: str) -> str:
+    try:
+        return canonical_preset(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _register_remote_actions(actions: argparse._SubParsersAction) -> None:
+    connect = actions.add_parser(
+        "connect",
+        help="Open an interactive SSH session to the GPU host.",
+    )
+    _add_remote_connection_args(connect)
+    connect.add_argument(
+        "--tunnel-port",
+        type=int,
+        help="Forward this localhost port to the same port on the host.",
+    )
+    connect.set_defaults(func=_cmd_remote_connect)
+
+    check = actions.add_parser(
+        "check",
+        help="Check SSH plus NVIDIA and JAX device visibility.",
+    )
+    _add_remote_connection_args(check)
+    check.set_defaults(func=_cmd_remote_check)
+
+    prepare = actions.add_parser(
+        "prepare",
+        help="Sync this checkout and prepare a GPU-enabled remote virtualenv.",
+    )
+    _add_remote_connection_args(prepare)
+    prepare.add_argument("--project", type=Path, default=Path("."))
+    prepare.add_argument("--remote-dir")
+    prepare.add_argument(
+        "--jax-cuda",
+        choices=("preinstalled", "cuda12", "cuda13"),
+        default="preinstalled",
+        help="Use a preinstalled system JAX or install a pip CUDA wheel.",
+    )
+    prepare.add_argument(
+        "--python",
+        dest="python_command",
+        default="python3",
+        help="Remote Python 3.11+ executable used to create the training virtualenv.",
+    )
+    prepare.set_defaults(func=_cmd_remote_prepare)
+
+    smoke = actions.add_parser(
+        "smoke",
+        help="Run the reset/step environment smoke gate on the remote GPU.",
+    )
+    _add_remote_connection_args(smoke)
+    smoke.add_argument(
+        "env_name",
+        help="Playground env name or synced custom *.py env module path.",
+    )
+    smoke.add_argument("--remote-dir")
+    smoke.add_argument("--steps", type=int, default=10)
+    smoke.set_defaults(func=_cmd_remote_smoke)
+
+    train = actions.add_parser(
+        "train",
+        help="Run training on a prepared SSH GPU host (smoke preset by default).",
+    )
+    _add_remote_connection_args(train)
+    train.add_argument(
+        "env_name",
+        help="Playground env name or synced custom *.py env module path.",
+    )
+    train.add_argument(
+        "--preset",
+        type=_parse_preset,
+        default="smoke",
+        help="PPO scale: smoke, local, or large. `cloud` is a hidden alias for large.",
+    )
+    train.add_argument("--remote-dir")
+    train.add_argument(
+        "--output",
+        help="Remote run directory, relative to --remote-dir unless absolute.",
+    )
+    train.add_argument(
+        "--contract",
+        help="Frozen contract path inside the synced remote project.",
+    )
+    train.add_argument(
+        "--contract-compatibility",
+        choices=("exact", "training_resume"),
+        default="exact",
+    )
+    train.add_argument(
+        "--detach",
+        action="store_true",
+        help="Keep training after SSH disconnects and write train.log/train.pid.",
+    )
+    train.add_argument("--timesteps", type=int)
+    train.add_argument("--num-envs", type=int)
+    train.add_argument("--batch-size", type=int)
+    train.add_argument(
+        "--impl",
+        choices=("auto", "jax", "warp"),
+        default="auto",
+    )
+    train.add_argument("--seed", type=int, default=0)
+    train.add_argument(
+        "--domain-randomization",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    train.add_argument(
+        "--resume",
+        help="Remote run directory or checkpoints/ path to restore Brax/Orbax weights from.",
+    )
+    train.add_argument(
+        "--allow-resume-mismatch",
+        action="store_true",
+        help="Allow resume when recorded env/network/impl differ from this command.",
+    )
+    train.set_defaults(func=_cmd_remote_train)
+
+    status = actions.add_parser(
+        "status",
+        help="Show detached process state, progress.json, and recent training log lines.",
+    )
+    _add_remote_connection_args(status)
+    status.add_argument("output", help="Remote output returned by simrig remote train.")
+    status.add_argument("--remote-dir")
+    status.add_argument("--lines", type=int, default=30)
+    status.set_defaults(func=_cmd_remote_status)
+
+    fetch = actions.add_parser(
+        "fetch",
+        help="Download a remote run directory into local runs/.",
+    )
+    _add_remote_connection_args(fetch)
+    fetch.add_argument("output", help="Remote output returned by simrig remote train.")
+    fetch.add_argument("--remote-dir")
+    fetch.add_argument("--local-output", type=Path)
+    fetch.set_defaults(func=_cmd_remote_fetch)
+
+
+def _add_remote_connection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "host",
+        help="IP address or DNS name of an already-running Linux GPU SSH host.",
+    )
     parser.add_argument(
         "--identity",
         "-i",
         type=Path,
-        help="Path to the SSH private key selected when the instance was launched.",
+        help="Path to the SSH private key used to reach the host.",
     )
     parser.add_argument("--user", default="ubuntu")
     parser.add_argument("--port", type=int, default=22)
 
 
-def _lambda_config(args: argparse.Namespace) -> LambdaSSHConfig:
-    return LambdaSSHConfig(
+def _remote_config(args: argparse.Namespace) -> SSHConfig:
+    return SSHConfig(
         host=args.host,
         user=args.user,
         identity=args.identity,
@@ -597,28 +962,28 @@ def _lambda_config(args: argparse.Namespace) -> LambdaSSHConfig:
     )
 
 
-def _cmd_lambda_connect(args: argparse.Namespace) -> int:
-    return connect_lambda(_lambda_config(args), tunnel_port=args.tunnel_port)
+def _cmd_remote_connect(args: argparse.Namespace) -> int:
+    return connect_remote(_remote_config(args), tunnel_port=args.tunnel_port)
 
 
-def _cmd_lambda_check(args: argparse.Namespace) -> int:
-    return check_lambda(_lambda_config(args))
+def _cmd_remote_check(args: argparse.Namespace) -> int:
+    return check_remote(_remote_config(args))
 
 
-def _cmd_lambda_prepare(args: argparse.Namespace) -> None:
-    prepare_lambda(
-        _lambda_config(args),
+def _cmd_remote_prepare(args: argparse.Namespace) -> None:
+    prepare_remote(
+        _remote_config(args),
         project_dir=args.project,
         remote_dir=args.remote_dir,
         jax_cuda=args.jax_cuda,
         python_command=args.python_command,
     )
-    print(f"prepared Lambda project: {args.remote_dir or f'/home/{args.user}/simrig'}")
+    print(f"prepared remote project: {args.remote_dir or f'/home/{args.user}/simrig'}")
 
 
-def _cmd_lambda_train(args: argparse.Namespace) -> int:
-    result = train_lambda(
-        _lambda_config(args),
+def _cmd_remote_train(args: argparse.Namespace) -> int:
+    result = train_remote(
+        _remote_config(args),
         args.env_name,
         preset_name=args.preset,
         remote_dir=args.remote_dir,
@@ -630,42 +995,46 @@ def _cmd_lambda_train(args: argparse.Namespace) -> int:
         impl=args.impl,
         seed=args.seed,
         domain_randomization=args.domain_randomization,
+        resume=args.resume,
+        allow_resume_mismatch=args.allow_resume_mismatch,
+        task_contract=args.contract,
+        contract_compatibility=args.contract_compatibility,
     )
     if result.returncode == 0:
         mode = "detached run" if result.detached else "run"
-        print(f"Lambda {mode}: {result.output_dir}")
+        print(f"remote {mode}: {result.output_dir}")
     return result.returncode
 
 
-def _cmd_lambda_smoke(args: argparse.Namespace) -> int:
-    return smoke_lambda(
-        _lambda_config(args),
+def _cmd_remote_smoke(args: argparse.Namespace) -> int:
+    return smoke_remote(
+        _remote_config(args),
         args.env_name,
         remote_dir=args.remote_dir,
         steps=args.steps,
     )
 
 
-def _cmd_lambda_status(args: argparse.Namespace) -> int:
-    return status_lambda(
-        _lambda_config(args),
+def _cmd_remote_status(args: argparse.Namespace) -> int:
+    return status_remote(
+        _remote_config(args),
         args.output,
         remote_dir=args.remote_dir,
         lines=args.lines,
     )
 
 
-def _cmd_lambda_fetch(args: argparse.Namespace) -> None:
-    destination = fetch_lambda(
-        _lambda_config(args),
+def _cmd_remote_fetch(args: argparse.Namespace) -> None:
+    destination = fetch_remote(
+        _remote_config(args),
         args.output,
         remote_dir=args.remote_dir,
         local_output=args.local_output,
     )
     print(f"downloaded run: {destination}")
     print(
-        "After verifying these artifacts or persistent storage, terminate the "
-        "Lambda instance in the cloud console to stop compute charges."
+        "After verifying these artifacts or persistent storage, stop the GPU "
+        "host if it is a billable VM."
     )
 
 

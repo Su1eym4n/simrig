@@ -42,6 +42,13 @@ def default_config() -> dict[str, Any]:
     }
 
 
+SUCCESS_SPEC = {
+    "metric": "success",
+    "threshold": 0.5,
+    "mode": "any",
+}
+
+
 def make_env(config_overrides: dict[str, Any] | None = None) -> "CustomEnv":
     """Factory used by `simrig smoke/train/eval` for this module."""
     config = default_config()
@@ -187,6 +194,10 @@ class CustomEnv:
             return mjx.step(self._mjx_model, d), None
 
         data, _ = jax.lax.scan(body_step, data, None, self._n_substeps)
+        # mjx.step integrates qpos after computing derived site positions.
+        # Refresh them so observations, reward, and termination measure the
+        # actual end-of-control-tick pose, as the independent evaluator does.
+        data = mjx.forward(self._mjx_model, data)
 
         # SECTION: observations
         info = dict(state.info)

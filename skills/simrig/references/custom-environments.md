@@ -86,6 +86,10 @@ Return:
 ```
 
 Keep shapes static. Include only deployable information in `state`.
+Check that derived positions used by observations, rewards, and termination
+refer to the final integrated qpos. MJX stepping can leave derived site poses
+from before the last integration; refresh forward kinematics where needed and
+compare against native MuJoCo in a moving-state regression check.
 `privileged_state` may add simulation-only state for the PPO value function.
 Avoid unbounded angles or poorly scaled features when a stable representation
 is available. Update `observation_size` whenever features change.

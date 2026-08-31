@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from simrig.runtime import runtime_mismatches, training_provenance, verify_checkpoint_runtime
+from simrig.runtime import (
+    runtime_mismatches,
+    source_closure_manifest,
+    training_provenance,
+    verify_checkpoint_runtime,
+)
 
 
 class RuntimeCompatibilityTests(unittest.TestCase):
@@ -54,6 +59,29 @@ class RuntimeCompatibilityTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("python:") for item in mismatches))
         self.assertTrue(any(item.startswith("mujoco:") for item in mismatches))
         self.assertFalse(any(item.startswith("playground:") for item in mismatches))
+
+    def test_source_closure_hashes_local_imports_and_xml_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = root / "task.py"
+            helper = root / "helper.py"
+            scene = root / "scene.xml"
+            body = root / "body.xml"
+            mesh = root / "part.stl"
+            env.write_text("import helper\n", encoding="utf-8")
+            helper.write_text("VALUE = 1\n", encoding="utf-8")
+            scene.write_text(
+                "<mujoco><include file='body.xml'/><asset><mesh file='part.stl'/></asset></mujoco>",
+                encoding="utf-8",
+            )
+            body.write_text("<mujoco><worldbody/></mujoco>", encoding="utf-8")
+            mesh.write_bytes(b"solid part\nendsolid part\n")
+
+            entries = source_closure_manifest(env, scene)
+
+        paths = {entry["relative_path"] for entry in entries}
+        self.assertEqual(paths, {"task.py", "helper.py", "scene.xml", "body.xml", "part.stl"})
+        self.assertTrue(all(len(entry["sha256"]) == 64 for entry in entries))
 
     def test_checkpoint_mismatch_requires_explicit_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

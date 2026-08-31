@@ -26,6 +26,8 @@ class LiveWebViewerTests(unittest.TestCase):
         self.assertIn("/scene.json", page)
         self.assertIn("/state.json", page)
         self.assertIn("Clear Trail", page)
+        self.assertIn("Show Trail", page)
+        self.assertIn("hide-trail", page)
 
     def test_live_viewer_serves_script_owned_data(self) -> None:
         try:

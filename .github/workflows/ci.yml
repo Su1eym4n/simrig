@@ -45,6 +45,9 @@ jobs:
           simrig validate-env examples/demo_reach.py --runtime
           simrig smoke examples/demo_reach.py --steps 10
 
+      - name: Evaluate native MuJoCo controller example
+        run: python -m pytest tests/test_evaluation_suite.py -q
+
       - name: Train and reload a tiny policy
         run: |
           simrig train examples/demo_reach.py \
@@ -58,6 +61,11 @@ jobs:
             --env examples/demo_reach.py \
             --steps 20 \
             --seed 5
+
+      - name: Check learned policy loading, independent evaluation, and preview parity
+        env:
+          SIMRIG_TEST_POLICY: /tmp/simrig-ci-run/policy.params
+        run: python -m pytest tests/test_learned_reach.py -q
 
   package:
     runs-on: ubuntu-latest

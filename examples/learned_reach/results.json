@@ -1,0 +1,164 @@
+{
+  "date": "2026-08-31",
+  "kind": "simrig.learned-reference-result",
+  "policy": "runs/learned-reach-reference-20260831/corrected/policy.params",
+  "policy_sha256": "f0d58dd7f0536828788d4c4f285764683c3e0de2bd15138413db25498fe59f58",
+  "config_sha256": "840d56987297924608ba658a5477938ee93d1aab837cae454070eff589db07f9",
+  "task_contract_sha256": "175d5c14dc28dfec6e2d1b915552522c7e6c2d761edd107b3bcddc9b702ccfe3",
+  "runtime": {
+    "packages": {
+      "brax": "0.14.2",
+      "jax": "0.10.2",
+      "mujoco": "3.10.0",
+      "mujoco_mjx": "3.10.0",
+      "numpy": "2.5.1",
+      "playground": "0.2.0",
+      "simrig": "0.4.0"
+    },
+    "platform": "macOS-15.5-arm64-arm-64bit-Mach-O",
+    "python": "3.14.5",
+    "python_implementation": "CPython"
+  },
+  "training_seed": 5,
+  "requested_timesteps": 180000,
+  "actual_timesteps": 184320,
+  "smoke_timesteps": 4160,
+  "task_acceptance_passed": true,
+  "baseline_discrimination_passed": false,
+  "suites": {
+    "promotion": {
+      "verification_passed": false,
+      "ranking_error": null,
+      "verification_report": "runs/learned-reach-reference-20260831/final-promotion/verification-20260831-135150-00030af3a1c5.json",
+      "reports": [
+        {
+          "episodes": 12,
+          "expected_pass": true,
+          "median_episode_time_sec": 0.1,
+          "name": "ik",
+          "passed": true,
+          "report": "runs/learned-reach-reference-20260831/final-promotion/ik-20260831-135058-7d9ef1613ea7.json",
+          "successes": 12,
+          "valid_measurements": true,
+          "report_sha256": "7c1dbd7a8e241d1d5eb602b8edc78075f5d596278d0d10b109b74a8278b0d59a",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": false,
+          "median_episode_time_sec": 4.0,
+          "name": "zero",
+          "passed": false,
+          "report": "runs/learned-reach-reference-20260831/final-promotion/zero-20260831-135110-65b7e80ba6cb.json",
+          "successes": 5,
+          "valid_measurements": true,
+          "report_sha256": "e21844b76cd8f14b835eeca92b83ea2e1348265d2830050d698a8bfd6f7d6dc6",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": false,
+          "median_episode_time_sec": 0.43000000000000005,
+          "name": "random",
+          "passed": true,
+          "report": "runs/learned-reach-reference-20260831/final-promotion/random-20260831-135122-1b5733b06f47.json",
+          "successes": 12,
+          "valid_measurements": true,
+          "report_sha256": "41beb4e0ae428834d94e8e63a1838aed4d1240cf5a78fb38b915be111c4d3a90",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": false,
+          "median_episode_time_sec": 0.09,
+          "name": "near_miss",
+          "passed": false,
+          "report": "runs/learned-reach-reference-20260831/final-promotion/near_miss-20260831-135137-e110dc97fc99.json",
+          "successes": 9,
+          "valid_measurements": true,
+          "report_sha256": "71e2a7715722cf476fed47e3b9d017b593cb200c88e6e2abc071a33336c0c1e5",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": true,
+          "median_episode_time_sec": 0.09000000000000001,
+          "name": "learned",
+          "passed": true,
+          "report": "runs/learned-reach-reference-20260831/final-promotion/learned-20260831-135150-be1b54e9383b.json",
+          "successes": 12,
+          "valid_measurements": true,
+          "report_sha256": "f0c0f0197dbdfc91e921ac15687ed4e33e83524a2419442f0a280bab47a0c9f1",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        }
+      ]
+    },
+    "holdout": {
+      "verification_passed": false,
+      "ranking_error": null,
+      "verification_report": "runs/learned-reach-reference-20260831/final-holdout/verification-20260831-135254-f19428815c20.json",
+      "reports": [
+        {
+          "episodes": 12,
+          "expected_pass": true,
+          "median_episode_time_sec": 0.1,
+          "name": "ik",
+          "passed": true,
+          "report": "runs/learned-reach-reference-20260831/final-holdout/ik-20260831-135208-8ab66b33ea29.json",
+          "successes": 12,
+          "valid_measurements": true,
+          "report_sha256": "52d54c3dd7c2a6d2d458ade194f20e670433611cdbaa722b402f02d6a9e0bc88",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": false,
+          "median_episode_time_sec": 4.0,
+          "name": "zero",
+          "passed": false,
+          "report": "runs/learned-reach-reference-20260831/final-holdout/zero-20260831-135220-b6062e5e5c74.json",
+          "successes": 2,
+          "valid_measurements": true,
+          "report_sha256": "e1b14f50fced8686a3b5a025a3cc0a81495a625cc977de9bfa4603fa3e083511",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": false,
+          "median_episode_time_sec": 0.22000000000000003,
+          "name": "random",
+          "passed": true,
+          "report": "runs/learned-reach-reference-20260831/final-holdout/random-20260831-135230-1de33f66fc3f.json",
+          "successes": 12,
+          "valid_measurements": true,
+          "report_sha256": "c5134270b25d8e619ffce2df5f2cb4d9e9560df7460833672c5501d19cb635d2",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": false,
+          "median_episode_time_sec": 2.05,
+          "name": "near_miss",
+          "passed": false,
+          "report": "runs/learned-reach-reference-20260831/final-holdout/near_miss-20260831-135242-287f4475ee72.json",
+          "successes": 6,
+          "valid_measurements": true,
+          "report_sha256": "1a45b17645a6457bf3e31e852d3623e95bc40df3f87dc9d0e29ae546eb2cd254",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        },
+        {
+          "episodes": 12,
+          "expected_pass": true,
+          "median_episode_time_sec": 0.11,
+          "name": "learned",
+          "passed": true,
+          "report": "runs/learned-reach-reference-20260831/final-holdout/learned-20260831-135254-6255df87de63.json",
+          "successes": 12,
+          "valid_measurements": true,
+          "report_sha256": "ad37feffcaa81f22b03e677b744a4fead2a3b170a3501caec5830551152ced17",
+          "evaluator_sha256": "3275c2de06b7d93710c67adfbc2fd5d662d9b37f01dc421376debbe48bf234ca"
+        }
+      ]
+    }
+  }
+}

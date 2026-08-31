@@ -1,9 +1,8 @@
-"""SSH-based training helpers for Lambda On-Demand Cloud instances.
+"""SSH helpers for an already-running Linux GPU.
 
-SimRig deliberately does not provision or terminate billable instances.  These
-helpers operate on an instance the user has already launched and make the
-project sync, GPU verification, training, monitoring, and artifact download
-steps reproducible.
+SimRig does not provision or terminate machines. These helpers sync a checkout,
+verify a GPU, train, monitor a detached run, and fetch artifacts over SSH. The
+host can be a workstation, a lab box, or any cloud VM the user already started.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ import tomllib
 from typing import Sequence
 
 from simrig.io import slugify, timestamp
+from simrig.presets import canonical_preset
 
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
@@ -41,8 +41,8 @@ def _pinned_jax_version(project: Path) -> str:
 
 
 @dataclass(frozen=True)
-class LambdaSSHConfig:
-    """Connection details for a Lambda Cloud instance."""
+class SSHConfig:
+    """Connection details for an already-running SSH GPU host."""
 
     host: str
     user: str = "ubuntu"
@@ -51,7 +51,7 @@ class LambdaSSHConfig:
 
     def __post_init__(self) -> None:
         if not self.host or not _HOST_RE.fullmatch(self.host):
-            raise ValueError("Lambda host must be an IP address or DNS name without whitespace.")
+            raise ValueError("SSH host must be an IP address or DNS name without whitespace.")
         if not self.user or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", self.user):
             raise ValueError("SSH user contains unsupported characters.")
         if not 1 <= self.port <= 65535:
@@ -64,7 +64,7 @@ class LambdaSSHConfig:
 
 
 @dataclass(frozen=True)
-class LambdaTrainResult:
+class RemoteTrainResult:
     """Location and process result for a remote training launch."""
 
     output_dir: str
@@ -73,7 +73,7 @@ class LambdaTrainResult:
 
 
 def ssh_command(
-    config: LambdaSSHConfig,
+    config: SSHConfig,
     remote_command: str | None = None,
     *,
     batch: bool = False,
@@ -110,13 +110,13 @@ def ssh_command(
     return command
 
 
-def connect_lambda(config: LambdaSSHConfig, *, tunnel_port: int | None = None) -> int:
+def connect_remote(config: SSHConfig, *, tunnel_port: int | None = None) -> int:
     """Open an interactive SSH session, optionally forwarding one localhost port."""
     _check_local_requirements(config, commands=("ssh",))
     return subprocess.run(ssh_command(config, tunnel_port=tunnel_port), check=False).returncode
 
 
-def check_lambda(config: LambdaSSHConfig) -> int:
+def check_remote(config: SSHConfig) -> int:
     """Verify SSH, NVIDIA visibility, and JAX GPU visibility when JAX is installed."""
     _check_local_requirements(config, commands=("ssh",))
     python_check = """\
@@ -140,8 +140,8 @@ else:
     return subprocess.run(ssh_command(config, remote, batch=True), check=False).returncode
 
 
-def prepare_lambda(
-    config: LambdaSSHConfig,
+def prepare_remote(
+    config: SSHConfig,
     *,
     project_dir: Path | str = ".",
     remote_dir: str | None = None,
@@ -189,7 +189,7 @@ def prepare_lambda(
         "devices=jax.devices(); "
         "print('jax devices:', devices); "
         "assert any(d.platform == 'gpu' for d in devices), "
-        "'JAX cannot see a GPU; inspect the Lambda image and JAX installation'"
+        "'JAX cannot see a GPU; inspect the image and JAX installation'"
     )
     python_check = (
         "import sys; print('python:', sys.version.split()[0]); "
@@ -229,8 +229,8 @@ def prepare_lambda(
     subprocess.run(ssh_command(config, setup, batch=True), check=True)
 
 
-def train_lambda(
-    config: LambdaSSHConfig,
+def train_remote(
+    config: SSHConfig,
     env_name: str,
     *,
     preset_name: str = "smoke",
@@ -243,11 +243,14 @@ def train_lambda(
     impl: str = "auto",
     seed: int = 0,
     domain_randomization: bool = True,
-) -> LambdaTrainResult:
-    """Run SimRig training on a prepared Lambda instance."""
+    resume: str | None = None,
+    allow_resume_mismatch: bool = False,
+    task_contract: str | None = None,
+    contract_compatibility: str = "exact",
+) -> RemoteTrainResult:
+    """Run SimRig training on a prepared SSH GPU host."""
     _check_local_requirements(config, commands=("ssh",))
-    if preset_name not in {"smoke", "local", "cloud"}:
-        raise ValueError("Preset must be one of: smoke, local, cloud")
+    preset_name = canonical_preset(preset_name)
     if impl not in {"auto", "jax", "warp"}:
         raise ValueError("Implementation must be one of: auto, jax, warp")
     if seed < 0:
@@ -273,6 +276,21 @@ def train_lambda(
     ]
     if not domain_randomization:
         train.append("--no-domain-randomization")
+    if resume:
+        train.extend(["--resume", resume])
+    if allow_resume_mismatch:
+        train.append("--allow-resume-mismatch")
+    if task_contract:
+        contract_path = PurePosixPath(task_contract)
+        if contract_path.is_absolute() or ".." in contract_path.parts:
+            raise ValueError(
+                "Remote task contract must be a path inside the synced project."
+            )
+        train.extend(["--contract", str(contract_path)])
+    if contract_compatibility not in {"exact", "training_resume"}:
+        raise ValueError("Unknown task-contract compatibility policy.")
+    if contract_compatibility != "exact":
+        train.extend(["--contract-compatibility", contract_compatibility])
     for flag, value in (
         ("--timesteps", timesteps),
         ("--num-envs", num_envs),
@@ -306,21 +324,21 @@ def train_lambda(
         ssh_command(config, remote, batch=True),
         check=False,
     ).returncode
-    return LambdaTrainResult(
+    return RemoteTrainResult(
         output_dir=remote_output,
         detached=detach,
         returncode=returncode,
     )
 
 
-def smoke_lambda(
-    config: LambdaSSHConfig,
+def smoke_remote(
+    config: SSHConfig,
     env_name: str,
     *,
     remote_dir: str | None = None,
     steps: int = 10,
 ) -> int:
-    """Run the environment reset/step smoke gate on the remote GPU instance."""
+    """Run the environment reset/step smoke gate on the remote GPU host."""
     _check_local_requirements(config, commands=("ssh",))
     if steps <= 0:
         raise ValueError("Smoke steps must be positive.")
@@ -336,14 +354,14 @@ def smoke_lambda(
     return subprocess.run(ssh_command(config, remote, batch=True), check=False).returncode
 
 
-def status_lambda(
-    config: LambdaSSHConfig,
+def status_remote(
+    config: SSHConfig,
     output: str,
     *,
     remote_dir: str | None = None,
     lines: int = 30,
 ) -> int:
-    """Report a detached run's process state and recent log output."""
+    """Report a detached run's process state, progress.json, and recent logs."""
     _check_local_requirements(config, commands=("ssh",))
     if lines <= 0:
         raise ValueError("Log line count must be positive.")
@@ -354,6 +372,8 @@ def status_lambda(
     policy_path = shlex.quote(f"{remote_output}/policy.params")
     metrics_path = shlex.quote(f"{remote_output}/final_metrics.json")
     checkpoint_path = shlex.quote(f"{remote_output}/checkpoints")
+    progress_path = shlex.quote(f"{remote_output}/progress.json")
+    manifest_path = shlex.quote(f"{remote_output}/run_manifest.json")
     remote = (
         f"if test -f {pid_path}; then pid=$(cat {pid_path}); else pid=unknown; fi; "
         f"if test -f {policy_path} && test -f {metrics_path} "
@@ -363,13 +383,15 @@ def status_lambda(
         "then state=running; elif test \"$artifacts\" = complete; "
         "then state=completed; else state=stopped; fi; "
         "printf 'status=%s pid=%s artifacts=%s\\n' \"$state\" \"$pid\" \"$artifacts\"; "
+        f"if test -f {progress_path}; then printf 'progress_json='; cat {progress_path}; printf '\\n'; fi; "
+        f"if test -f {manifest_path}; then printf 'manifest_json='; cat {manifest_path}; printf '\n'; fi; "
         f"if test -f {log_path}; then tail -n {lines} {log_path}; fi"
     )
     return subprocess.run(ssh_command(config, remote, batch=True), check=False).returncode
 
 
-def fetch_lambda(
-    config: LambdaSSHConfig,
+def fetch_remote(
+    config: SSHConfig,
     output: str,
     *,
     remote_dir: str | None = None,
@@ -402,7 +424,7 @@ def fetch_lambda(
     return destination
 
 
-def _check_local_requirements(config: LambdaSSHConfig, *, commands: Sequence[str]) -> None:
+def _check_local_requirements(config: SSHConfig, *, commands: Sequence[str]) -> None:
     for command in commands:
         if shutil.which(command) is None:
             raise RuntimeError(f"Required local command is not installed: {command}")
@@ -430,7 +452,7 @@ def _check_local_requirements(config: LambdaSSHConfig, *, commands: Sequence[str
             raise ValueError(f"Invalid SSH identity file {identity}: {detail}")
 
 
-def _resolve_remote_dir(config: LambdaSSHConfig, remote_dir: str | None) -> str:
+def _resolve_remote_dir(config: SSHConfig, remote_dir: str | None) -> str:
     value = remote_dir or f"/home/{config.user}/simrig"
     path = PurePosixPath(value)
     if not path.is_absolute() or ".." in path.parts:

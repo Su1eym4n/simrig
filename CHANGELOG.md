@@ -2,6 +2,95 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-31
+
+### Compatibility and scope
+
+- Evaluation-suite reports now use schema v2. Do not rank them with older
+  reports; rerun evaluation with complete metric/event/contact evidence.
+- Learned rollouts verify recorded environment source and model identities.
+  Checkpoints trained against the old reaching environment must not silently
+  run against its corrected source. Reproduce their original environment or
+  train a new policy on the corrected environment.
+- Shared policy playback currently supports `action_repeat=1`; other control
+  rates fail explicitly. GPU vision and native desktop playback were not
+  validated by the new CPU reaching reference.
+- The learned reaching reference demonstrates training, independent evaluation,
+  and preview, but both learned and random controls pass its 24 arrival cases.
+  Its verifier therefore fails the baseline-discrimination expectation. This
+  release does not claim a demanding manipulation skill or hardware readiness.
+- Task/reward design remains agent-owned. Reward probes analyze existing
+  reports; they do not automatically search for new exploits.
+
+### Changes
+
+- Replace the README's Go1 workflow GIF with a recorded dual-Panda A→B→A
+  mixed-controller exchange. The GIF labels the expert replay, learned catch,
+  and scripted restow; detailed compatibility and evaluation limits remain in
+  the release notes and source demo documentation.
+- Show green success, red failure, or neutral unknown outcomes in policy previews
+  using environment success metrics. Keep episode completion separate from task
+  success, and replace survival wording with neutral step counts.
+- Share policy loading and checked rollout execution across headless eval,
+  browser preview, native demo, and a reusable Playground evaluator adapter.
+  Restore final parameter files and Orbax checkpoints with recorded network
+  normalization and environment identity checks.
+- Add task-owned reset/measurement hooks, reusable evaluator instances, unique
+  trial reports, report schema v2, missing-evidence outcomes, strict seed coverage,
+  and invalid numerical state/action checks. Empty contact streams require
+  declared measurement coverage; mixed identities and unknown samples cannot
+  silently pass promotion.
+- Add a real learned-reaching acceptance reference with IK, zero, random, and
+  near-miss controls, a separately reserved holdout suite, and scenario-matched
+  previews. Fix stale post-integration site positions in the reaching environment
+  discovered by the independent evaluator; keep its reward formula and threshold.
+- Add `preview --seed` and `eval --output`; preserve unique reports by default.
+
+- Add versioned task contracts with `simrig task init`, `validate`, `freeze`,
+  and semantic `diff`. Frozen contracts use canonical content hashes and can
+  enforce resolved timestep, wall-time, GPU-hour, and metric abort budgets.
+- Add task-agnostic `simrig gate` promotion suites over independent JSON
+  evaluation reports, including required seed/scenario coverage and grouped
+  metric requirements.
+- Add `simrig reward-audit` to flag obvious disagreement between reward and
+  independently recorded task success.
+- Write v2 `run_manifest.json` lifecycle records with contract identity,
+  checkpoint lineage, bounded local source/XML/asset closure hashes, richer Git
+  state, actual progress, GPU-hours, optional cost, and failure status.
+- Replace the old cloud SSH path with `simrig remote`. The host is any
+  already-running Linux GPU over SSH. SimRig still does not provision or stop
+  machines.
+- Rename the large PPO preset from `cloud` to `large`. `--preset large` is
+  scale, not a remote launcher. `--preset cloud` remains a hidden alias, and
+  old run `config.json` files that recorded `"preset": "cloud"` still load.
+- Write `metrics.jsonl` and `progress.json` during PPO, and add `simrig status`
+  plus richer `simrig remote status` (step count, eval reward, ETA).
+- Add `simrig train --resume` / `simrig remote train --resume` to restore Brax
+  Orbax checkpoints.
+- Report `task_success` from `state.metrics["success"]` or `SUCCESS_SPEC`
+  instead of always leaving it unknown.
+- Add a backend-neutral evaluator plugin protocol and `simrig eval-suite` for
+  frozen scenario-by-seed matrices, with evaluator/source hashes in reports and
+  run manifests.
+- Add generic event, sustained-signal, metric, sequence, and contact predicates
+  with a stable machine-readable terminal failure taxonomy.
+- Add per-condition promotion reports, coverage-failing bounded checkpoint
+  evaluation, report-based reward probes, and reward-independent checkpoint
+  ranking.
+- Add explicit task-contract schema migration and purpose-specific exact,
+  training-resume, checkpoint-evaluation, and result-comparison policies.
+- Add a native MuJoCo controller-evaluation example with explicit task semantics,
+  actual actuator stepping, an IK controller, and a zero-action baseline. Keep
+  the synthetic reward-trap case under test fixtures, not public checkpoints.
+- Forward additional Brax PPO settings, including adaptive-KL scheduling and
+  advantage/value-loss controls, from environment training configuration.
+- Include examples, test fixtures, and skill documentation in source archives
+  so their tests and documented examples can run outside a Git checkout.
+- Strengthen the SimRig agent skill with a mandatory, user-confirmed Physical
+  Success Definition gate before reward, termination, environment authoring, or
+  training for new task semantics, including feasibility checks, counterexamples,
+  controls, and independent promotion evidence.
+
 ## 0.4.0 - 2026-08-17
 
 - Require Python 3.11+, test the supported boundary in CI, and make static
@@ -28,7 +117,7 @@
 - Resolve registered MuJoCo Playground training from each task's tuned Brax PPO
   and network configuration while preserving SimRig's bounded smoke/local gates.
 - Add `--impl auto|jax|warp`, GPU-aware Warp fallback, reproducible `--seed`,
-  and opt-out domain randomization for local and Lambda training.
+  and opt-out domain randomization for local and remote training.
 - Record the resolved implementation, network, randomizer, source hashes, Git
   state, JAX devices, precision environment, and exact CLI overrides in every run.
 - Reconstruct recorded implementations and network layouts for eval, demo, and
@@ -38,12 +127,11 @@
 
 ## 0.3.0 - 2026-08-01
 
-- Add an SSH-based Lambda On-Demand Cloud workflow with connection and GPU
-  checks, project sync/setup, remote smoke and PPO training, detached-run
-  status, and run-artifact download.
-- Add a Lambda GPU operations guide covering SSH keys, persistent storage,
-  smoke-before-cloud gates, port forwarding, and instance shutdown.
-- Pin the Playground training stack and require Python 3.11+ during Lambda
+- Add an SSH GPU workflow with connection and GPU checks, project sync/setup,
+  remote smoke and PPO training, detached-run status, and run-artifact download.
+- Add a remote GPU operations guide covering SSH keys, persistent storage,
+  smoke-before-scale gates, port forwarding, and stopping billable VMs.
+- Pin the Playground training stack and require Python 3.11+ during remote
   preparation instead of silently resolving an older environment on Python
   3.10.
 - Record Python and package versions in every training run and refuse eval,
@@ -53,7 +141,7 @@
   fail closed when port forwarding cannot be established, and support older
   macOS `rsync` clients.
 - Require the final policy, metrics, and checkpoint artifacts before reporting
-  a detached Lambda run as completed; fetched runs now include a shutdown-cost
+  a detached remote run as completed; fetched runs now include a shutdown-cost
   reminder.
 - Evaluation results distinguish rollout completion from task success and state
   clearly when no task-specific success evaluator is configured.
