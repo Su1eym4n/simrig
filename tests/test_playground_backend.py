@@ -185,6 +185,10 @@ def training_config():
             "num_updates_per_batch": 1,
             "discounting": 0.97,
             "learning_rate": 3e-4,
+            "desired_kl": 0.02,
+            "learning_rate_schedule": "ADAPTIVE_KL",
+            "learning_rate_schedule_min_lr": 1e-5,
+            "learning_rate_schedule_max_lr": 1.5e-4,
             "entropy_cost": 1e-2,
             "normalize_observations": True,
             "action_repeat": 1,
@@ -230,6 +234,16 @@ def training_config():
         self.assertIs(ppo.train.call_args.kwargs["randomization_fn"], randomizer)
         self.assertEqual(ppo.train.call_args.kwargs["seed"], 7)
         self.assertEqual(ppo.train.call_args.kwargs["reward_scaling"], 1.0)
+        self.assertEqual(ppo.train.call_args.kwargs["desired_kl"], 0.02)
+        self.assertEqual(
+            ppo.train.call_args.kwargs["learning_rate_schedule"], "ADAPTIVE_KL"
+        )
+        self.assertEqual(
+            ppo.train.call_args.kwargs["learning_rate_schedule_min_lr"], 1e-5
+        )
+        self.assertEqual(
+            ppo.train.call_args.kwargs["learning_rate_schedule_max_lr"], 1.5e-4
+        )
         self.assertIn("--impl", run.command)
         self.assertIn("warp", run.command)
         self.assertIn("--timesteps", run.command)

@@ -11,7 +11,7 @@
   },
   "environment": {
     "backend": "analytic",
-    "ref": "planar-reach-acceptance"
+    "ref": "analytic-reach-test-fixture"
   },
   "episode": {
     "horizon_steps": 40
@@ -99,7 +99,7 @@
     "observations": "Planar joint state and Cartesian target; no privileged success signal."
   },
   "kind": "simrig.task-contract",
-  "name": "planar-reach-phase1-acceptance",
+  "name": "analytic-reach-test-fixture",
   "outcomes": {
     "failure": "Failure to sustain target tolerance, forbidden-zone contact, timeout, invalid state, or evaluator error.",
     "failure_taxonomy": [

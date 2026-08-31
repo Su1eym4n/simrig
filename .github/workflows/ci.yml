@@ -45,6 +45,9 @@ jobs:
           simrig validate-env examples/demo_reach.py --runtime
           simrig smoke examples/demo_reach.py --steps 10
 
+      - name: Evaluate native MuJoCo controller example
+        run: python -m pytest tests/test_evaluation_suite.py -q
+
       - name: Train and reload a tiny policy
         run: |
           simrig train examples/demo_reach.py \

@@ -90,9 +90,13 @@ simrig inspect-env ENV_NAME --save-report
 
 ### 2. Define physical success before implementation
 
-Complete a **Physical Success Definition** before authoring rewards,
-termination logic, a custom environment, or any training configuration. This
-is a mandatory semantic gate, not a reward-design exercise. An agent cannot
+For a new behavior or changed task semantics, complete a **Physical Success
+Definition** before authoring rewards, termination logic, a custom environment,
+or its training configuration. Inspection, evaluation with an existing reviewed
+contract, and reproducing an unchanged example/upstream smoke run do not need a
+new definition. Smoke runs only establish pipeline operation, not promotion.
+For those new semantics, this is a mandatory gate, not a reward-design exercise.
+An agent cannot
 guarantee that its interpretation matches the user's intent: it must draft the
 definition, check it against the model and scene, challenge it with
 counterexamples, and obtain focused user confirmation for every unresolved
@@ -170,8 +174,10 @@ simrig smoke ENV_NAME --steps 10
 simrig train ENV_NAME --preset smoke --impl auto --seed 0 --contract task.frozen.json
 ```
 
-Use an existing environment only when its robot, task semantics, actions, and
-scene match the contract. Do not choose one solely because the robot name
+For a user-defined behavior, use an existing environment only when its robot,
+task semantics, actions, and scene match the contract. For an unchanged upstream
+pipeline smoke test, `--contract` may be omitted; state that limitation.
+Do not choose one solely because the robot name
 matches. Distinguish training over a command distribution from training only at
 one requested command. Registered Playground tasks use their upstream tuned PPO
 and network configuration plus their declared domain randomizer. `--impl auto`

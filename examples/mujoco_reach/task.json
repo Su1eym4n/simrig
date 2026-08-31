@@ -1,0 +1,67 @@
+{
+  "kind": "simrig.task-contract",
+  "schema_version": 2,
+  "name": "mujoco-simple-arm-reach",
+  "behavior": {
+    "objective": "Bring ee_site within 0.05 m of the target at any control tick within 200 ticks, using the reach criterion from examples/demo_reach.py."
+  },
+  "environment": {"backend": "mujoco", "ref": "simple-arm-reach"},
+  "episode": {"horizon_steps": 200},
+  "interfaces": {
+    "actions": "Two normalized joint-position targets in [-1, 1], mapped to shoulder and elbow actuator ctrlrange; 0.02 s control period, 0.002 s physics period.",
+    "observations": "Trusted scripted controller reads MuJoCo model/data and target XYZ in the world frame. This is not a deployable sensor interface."
+  },
+  "reset": {
+    "training": "No training in this example. Existing demo_reach.py samples joint positions uniformly in [-0.4, 0.4] rad with zero velocity and randomized reachable targets.",
+    "native": "Python random.Random(seed) samples each joint uniformly in [-0.4, 0.4] rad; velocity is zero. Targets are fixed per scenario. RNG samples differ from the MJX task."
+  },
+  "scene": {
+    "assumptions": [
+      "Uses examples/models/simple_arm.xml: 0.20 m and 0.18 m links, position actuators, gravity, and a non-colliding target marker.",
+      "World-frame Euclidean target error is measured from MuJoCo ee_site after stepping real actuator commands.",
+      "Matches the existing demo's any-arrival success criterion; does not require a sustained hold or evaluate contact safety.",
+      "Two fixed targets and six initial states demonstrate evaluation plumbing, not generalization or real-robot readiness."
+    ],
+    "allowed_contacts": [],
+    "forbidden_contacts": []
+  },
+  "outcomes": {
+    "failure_taxonomy": ["evaluator_error", "invalid_state", "forbidden_contact", "safety_violation", "timeout", "task_failure", "incomplete", "unknown", "success"],
+    "success": "Minimum post-step ee_site target error is strictly below 0.05 m within 200 control ticks and no MuJoCo warnings occurred.",
+    "failure": "No target arrival within the horizon, any MuJoCo warning, invalid controller action, non-finite simulator state, or evaluator error. Contacts and sustained stability are not assessed."
+  },
+  "compute": {
+    "max_timesteps": 1200,
+    "max_wall_time_sec": 30,
+    "max_gpu_hours": null,
+    "gpu_hourly_cost": null,
+    "abort_rules": []
+  },
+  "evaluation": {
+    "evaluator": {"plugin": "evaluator.py", "config": {}},
+    "predicates": [
+      {
+        "id": "target_arrival", "type": "metric",
+        "metric": "minimum_target_error", "operator": "<", "value": 0.05,
+        "failure_category": "task_failure", "failure_code": "target_not_reached"
+      },
+      {
+        "id": "valid_simulation", "type": "metric",
+        "metric": "mujoco_warning_count", "operator": "==", "value": 0,
+        "failure_category": "invalid_state", "failure_code": "mujoco_warning"
+      }
+    ],
+    "suites": {
+      "promotion": {
+        "group_by": ["scenario"],
+        "requirements": [
+          {"metric": "task_success", "aggregate": "rate", "operator": ">=", "value": 1.0}
+        ],
+        "scenarios": [
+          {"name": "nominal", "parameters": {"target": [0.25, 0.0, 0.22]}, "seeds": [0, 1, 2]},
+          {"name": "boundary", "parameters": {"target": [0.31, 0.0, 0.22]}, "seeds": [3, 4, 5]}
+        ]
+      }
+    }
+  }
+}

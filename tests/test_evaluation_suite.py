@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from simrig.evaluation_suite import (
     EvaluationLimits,
@@ -16,11 +18,10 @@ from simrig.task_contract import freeze_task_contract
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXAMPLE = ROOT / "examples" / "phase1"
+EXAMPLE = ROOT / "tests" / "fixtures" / "analytic_reach"
 
 
-def _frozen_contract(tmp: str) -> Path:
-    source = EXAMPLE / "planar_reach_task.json"
+def _frozen_contract(tmp: str, source: Path = EXAMPLE / "planar_reach_task.json") -> Path:
     contract = json.loads(source.read_text(encoding="utf-8"))
     path = Path(tmp) / "task.frozen.json"
     path.write_text(
@@ -35,12 +36,12 @@ class EvaluationSuiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             contract = _frozen_contract(tmp)
             valid = run_evaluation_suite(
-                EXAMPLE / "checkpoints" / "valid.json",
+                EXAMPLE / "controllers" / "valid.json",
                 contract_path=contract,
                 suite_name="promotion",
             )
             trap = run_evaluation_suite(
-                EXAMPLE / "checkpoints" / "reward_trap.json",
+                EXAMPLE / "controllers" / "reward_trap.json",
                 contract_path=contract,
                 suite_name="promotion",
             )
@@ -71,7 +72,7 @@ class EvaluationSuiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             contract = _frozen_contract(tmp)
             report = run_evaluation_suite(
-                EXAMPLE / "checkpoints" / "valid.json",
+                EXAMPLE / "controllers" / "valid.json",
                 contract_path=contract,
                 suite_name="promotion",
                 limits=EvaluationLimits(max_scenarios=1, max_seeds_per_scenario=1),
@@ -115,7 +116,7 @@ class EvaluationSuiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             contract = _frozen_contract(tmp)
             report = run_evaluation_suite(
-                EXAMPLE / "checkpoints" / "valid.json",
+                EXAMPLE / "controllers" / "valid.json",
                 contract_path=contract,
                 suite_name="promotion",
             )
@@ -125,6 +126,58 @@ class EvaluationSuiteTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
                 load_suite_reports([path])
+
+
+@unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo extra required")
+class MujocoReachExampleTests(unittest.TestCase):
+    example = ROOT / "examples" / "mujoco_reach"
+
+    def test_real_rollouts_and_reward_free_ranking(self) -> None:
+        import mujoco
+
+        with tempfile.TemporaryDirectory() as tmp:
+            contract = _frozen_contract(tmp, self.example / "task.json")
+            with mock.patch.object(mujoco, "mj_step", wraps=mujoco.mj_step) as step:
+                positive = run_evaluation_suite(
+                    self.example / "controllers" / "ik.py",
+                    contract_path=contract,
+                    suite_name="promotion",
+                )
+            baseline = run_evaluation_suite(
+                self.example / "controllers" / "zero.py",
+                contract_path=contract,
+                suite_name="promotion",
+            )
+
+        self.assertTrue(positive["passed"])
+        self.assertFalse(baseline["passed"])
+        self.assertEqual(len(positive["records"]), 6)
+        self.assertEqual(
+            step.call_count,
+            sum(record["metrics"]["physics_steps"] for record in positive["records"]),
+        )
+        for record in positive["records"]:
+            metrics = record["metrics"]
+            self.assertGreater(metrics["physics_steps"], 0)
+            self.assertAlmostEqual(metrics["simulation_time_sec"], metrics["physics_steps"] * 0.002)
+            self.assertLess(metrics["minimum_target_error"], 0.05)
+            self.assertIsNone(record.get("total_reward"))
+        ranking = rank_checkpoints([baseline, positive])
+        self.assertEqual(ranking["checkpoints"][0]["checkpoint"], positive["checkpoint"]["path"])
+        self.assertFalse(ranking["reward_used_for_ranking"])
+
+    def test_invalid_controller_action_fails_as_evaluator_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            contract = _frozen_contract(tmp, self.example / "task.json")
+            controller = Path(tmp) / "invalid.py"
+            controller.write_text("def action(model, data, target):\n    return [float('nan'), 0]\n")
+            report = run_evaluation_suite(
+                controller, contract_path=contract, suite_name="promotion",
+                limits=EvaluationLimits(max_scenarios=1, max_seeds_per_scenario=1),
+            )
+
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["records"][0]["terminal_reason"]["category"], "evaluator_error")
 
 
 if __name__ == "__main__":

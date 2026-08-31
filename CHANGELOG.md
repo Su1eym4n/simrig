@@ -35,12 +35,17 @@
   ranking.
 - Add explicit task-contract schema migration and purpose-specific exact,
   training-resume, checkpoint-evaluation, and result-comparison policies.
-- Add a dependency-free planar-arm acceptance example containing fixed nominal
-  and boundary cases plus an intentionally high-reward physical failure.
+- Add a native MuJoCo controller-evaluation example with explicit task semantics,
+  actual actuator stepping, an IK controller, and a zero-action baseline. Keep
+  the synthetic reward-trap case under test fixtures, not public checkpoints.
+- Forward additional Brax PPO settings, including adaptive-KL scheduling and
+  advantage/value-loss controls, from environment training configuration.
+- Include examples, test fixtures, and skill documentation in source archives
+  so their tests and documented examples can run outside a Git checkout.
 - Strengthen the SimRig agent skill with a mandatory, user-confirmed Physical
   Success Definition gate before reward, termination, environment authoring, or
-  training, including feasibility checks, counterexamples, controls, and
-  independent promotion evidence.
+  training for new task semantics, including feasibility checks, counterexamples,
+  controls, and independent promotion evidence.
 
 ## 0.4.0 - 2026-08-17
 

@@ -151,23 +151,13 @@ A task-contract v2 evaluator is a trusted local Python file. It declares
 `evaluate(request)`. It owns simulator construction and checkpoint loading.
 It must not decide promotion from training reward.
 
-```python
-EVALUATOR_SPEC = {
-    "name": "my-task-evaluator",
-    "version": "1.0.0",
-    "protocol_version": 1,
-}
-
-
-def evaluate(request):
-    return {
-        "total_reward": 12.5,
-        "metrics": {"final_error": 0.01},
-        "events": [
-            {"kind": "signal", "name": "at_goal", "step": 30, "active": True}
-        ],
-    }
-```
+See [the MuJoCo reaching evaluator](https://github.com/Su1eym4n/simrig/blob/main/examples/mujoco_reach/evaluator.py)
+for an executable implementation that applies actual controller commands and
+measures `ee_site` after stepping. Its declaration identifies the evaluator and
+model; `evaluate(request)` returns measured `metrics` and `events`. Do not copy
+constant example measurements into an evaluator and treat them as evidence.
+`total_reward` is optional and is only useful for reward diagnostics; it is not
+needed for independent success or ranking.
 
 The request is a mapping with `checkpoint`, `environment`, `backend`, `suite`,
 `scenario`, `parameters`, `seed`, `max_steps`, `task_contract_sha256`, and
@@ -232,10 +222,15 @@ and suite. Ranking is lexicographic over promotion pass, worst-condition
 success rate, overall success rate, then lower safety-failure rate. Reward is
 excluded.
 
-The analytic planar-arm example in
-[examples/phase1](../../../examples/phase1/README.md) tests this architecture,
-not a training backend. Its valid controller passes; a high-reward trap fails
-forbidden-contact predicates and ranks last.
+The [MuJoCo controller example](https://github.com/Su1eym4n/simrig/blob/main/examples/mujoco_reach/README.md)
+uses a scripted IK controller and zero-action baseline, not trained checkpoints.
+Its target-arrival test does not establish sustained stability or contact safety.
+The synthetic high-reward trap is a regression fixture in
+`tests/fixtures/analytic_reach`, not physical acceptance evidence.
+
+The protocol is backend-neutral, but plugins are task-specific: each must load
+its supported simulator and policy format and measure its own physical signals.
+An arbitrary environment name or checkpoint cannot run without that integration.
 
 Evaluator plugins are not sandboxed. SimRig does not yet provide backend
 adapters, distributed evaluator workers, a columnar event store, or a

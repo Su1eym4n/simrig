@@ -9,6 +9,7 @@ meaningful training run:
 
 ```bash
 simrig task init ENV_OR_PATH --output task.json
+# Fill the physical definition and resolve semantic choices with the user.
 simrig task validate task.json
 simrig task freeze task.json --output task.frozen.json
 ```
@@ -152,6 +153,8 @@ The script remains responsible for stepping and real-time pacing.
 ## Custom Env Module
 
 Use this path when no Playground env fits and the user wants a custom task.
+Confirm its physical success definition and freeze the contract before
+implementing new task semantics.
 
 1. Scaffold after the user chooses a task:
 
@@ -170,7 +173,7 @@ Use this path when no Playground env fits and the user wants a custom task.
 
    ```bash
    simrig smoke envs/TASK_NAME.py --steps 10
-   simrig train envs/TASK_NAME.py --preset smoke --seed 0
+   simrig train envs/TASK_NAME.py --preset smoke --seed 0 --contract task.frozen.json
    simrig eval runs/.../policy.params --env envs/TASK_NAME.py --seed 0
    ```
 

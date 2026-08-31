@@ -154,13 +154,14 @@ Open a project containing a MuJoCo robot or scene and ask the agent naturally:
 You can invoke the workflow explicitly with `$simrig`, but the skill can also
 activate automatically when the request matches its description.
 
-### Freeze the task before training
+### Define a new task before training
 
 Create a portable JSON contract before implementing or scaling a new task:
 
 ```bash
 simrig task init envs/my_task.py --output task.json
 # Edit every TODO: behavior, interfaces, resets, outcomes, scenarios, and budgets.
+# Review the physical success definition with the user before freezing.
 simrig task validate task.json
 simrig task freeze task.json --output task.frozen.json
 ```
@@ -208,7 +209,17 @@ without independently verified success. `simrig eval-checkpoints` provides a
 bounded one-shot check of available run checkpoints; it does not start a
 persistent monitor. See the evaluator protocol in
 [evaluation-and-operations.md](skills/simrig/references/evaluation-and-operations.md)
-and the [planar-arm acceptance example](examples/phase1/README.md).
+and the [MuJoCo controller evaluation example](examples/mujoco_reach/README.md).
+
+The example needs only `.[mujoco]` and runs actual actuator commands without
+training. Its inputs are clearly labeled scripted controllers. Evaluator plugins
+own environment setup and policy loading: the protocol is reusable, but an
+arbitrary environment or SDK is not supported merely by passing its name.
+
+Inspection and reproducing an unchanged example or upstream smoke run do not
+require designing a new task. Such smoke runs check the pipeline; they are not
+independent promotion evidence. New behaviors or changed success criteria need
+the reviewed contract above.
 
 Older contracts migrate explicitly to a reviewable draft, and compatibility is
 checked under a named purpose rather than inferred:
@@ -305,7 +316,7 @@ simrig new-env my_task --model path/to/scene.xml --template mjx
 simrig validate-env envs/my_task.py
 simrig validate-env envs/my_task.py --runtime
 simrig smoke envs/my_task.py --steps 10
-simrig train envs/my_task.py --preset smoke --seed 0
+simrig train envs/my_task.py --preset smoke --seed 0 --contract task.frozen.json
 ```
 
 The generated environment is a starter, not an invented task definition. The
