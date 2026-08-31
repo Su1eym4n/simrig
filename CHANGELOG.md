@@ -25,8 +25,9 @@
 ### Changes
 
 - Replace the README's Go1 workflow GIF with a recorded dual-Panda A→B→A
-  mixed-controller exchange, with the expert replay, learned catch, scripted
-  restow, runtime mismatch, and evaluation limits labeled explicitly.
+  mixed-controller exchange. The GIF labels the expert replay, learned catch,
+  and scripted restow; detailed compatibility and evaluation limits remain in
+  the release notes and source demo documentation.
 - Show green success, red failure, or neutral unknown outcomes in policy previews
   using environment success metrics. Keep episode completion separate from task
   success, and replace survival wording with neutral step counts.
