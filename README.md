@@ -35,10 +35,8 @@ continuous simulation cycle.
 <details>
 <summary><strong>Prompt</strong></summary>
 
-> Run the dual-Panda ball exchange through one complete A→B→A cycle and record
-> it for the README. Use real MuJoCo flight, label which parts are learned,
-> replayed, and scripted, and do not present one successful recording as an
-> independently validated end-to-end policy.
+> Run a complete dual-Panda A→B→A ball exchange in MuJoCo and record it for the
+> README. Make the throw, catch, and return phases smooth and easy to follow.
 
 </details>
 
