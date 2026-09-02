@@ -62,18 +62,60 @@ cannot be substituted without a loader that reconstructs that policy and its
 observations/action mapping. Other environments likewise need their own
 evaluator; changing `environment.ref` does not add support.
 
-## Watch the same rollout
+## Watch the interactive showcase
 
 ```bash
 python examples/mujoco_reach/evaluator.py --preview
 python examples/mujoco_reach/evaluator.py --controller examples/mujoco_reach/controllers/zero.py --preview
 ```
 
-Open the printed localhost URL. The script waits up to 15 seconds for a browser,
-runs the same MuJoCo rollout, holds the final state for five seconds, then exits.
-The positive controller reaches quickly. The preview uses `LiveWebViewer`; it
-shows live simulation, not recorded trajectory playback. Its Three.js assets
-load from a CDN. Omit `--preview` for headless measurements without a browser.
+Open the printed localhost URL. The script selects an available local port,
+waits up to 15 seconds for a browser, and runs a preview-only arm with base yaw,
+shoulder, and elbow joints. Its shoulder
+is mounted directly on the base cylinder. The route contains 30 seeded random
+positions at different radii, heights, and angles around every side of the
+robot, but only the current red target is shown. Preview mode rate-limits the
+controller's joint-position commands and briefly holds each arrival so the
+motion is easy to inspect. **Reset Simulation** restores the centered initial
+arm state, clears the trail, and restarts at target 1 at any time. Stop the
+persistent preview with `Ctrl+C`.
+
+The positive controller is **scripted inverse kinematics, not a trained
+policy**. The preview uses `LiveWebViewer`; it shows live simulation, not
+recorded trajectory playback. Its Three.js assets load from a CDN. Omit
+`--preview` for the original two-joint, single-target headless acceptance
+measurement; that evaluator and model are unchanged.
+
+## Watch the learned 360-degree policy
+
+The separate orbit-arm task is a real goal-conditioned PPO policy. It was
+calibrated on six independently reset targets using the stricter five-tick
+arrival hold, collision checks, and native MuJoCo measurements. Unlike the IK
+showcase, it is learned weights rather than a planner.
+
+Train a checkpoint on a CUDA-capable machine first:
+
+```bash
+simrig validate-env examples/mujoco_reach/orbit_reach.py --runtime
+simrig smoke examples/mujoco_reach/orbit_reach.py --steps 10
+simrig train examples/mujoco_reach/orbit_reach.py --preset large \
+  --output runs/orbit-reach
+```
+
+For an SSH GPU host, replace the last command with `simrig remote train` after
+`simrig remote prepare`; fetch the completed run into `runs/` before previewing.
+
+```bash
+python examples/mujoco_reach/policy_preview.py \
+  --policy runs/remote-trained-v3c/policy.params \
+  --allow-runtime-mismatch
+```
+
+Open the printed localhost URL. It moves through the same 30 target positions,
+shows only the next red target, and has **Reset Simulation**. This checkpoint
+was trained on the remote Linux GPU runtime, so `--allow-runtime-mismatch` is
+required on this Mac and makes the preview qualitative rather than a formal
+reproduction.
 
 ## Limits and adapting it
 

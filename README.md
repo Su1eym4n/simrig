@@ -10,8 +10,8 @@
 
 </div>
 
-Turn MuJoCo robots into trained policies with agent-guided task design, PPO
-training, evaluation, and interactive previews.
+Build, train, evaluate, and visually inspect MuJoCo control experiments with
+agent-guided task design, PPO training, and interactive browser previews.
 
 SimRig combines:
 
@@ -24,6 +24,34 @@ Raw robot XML is not automatically a training task. SimRig helps the agent move
 from a model and a requested behavior to explicit observations, actions,
 rewards, resets, termination conditions, validation, training, and evaluation.
 
+## See what the policy is actually doing
+
+Inspect raw MJCF models with joint controls, preview trained policies in an
+interactive Three.js scene, or attach the same viewer to an existing MuJoCo
+controller. Orbit, zoom, pause, reset episodes, inspect authored robot cameras,
+and follow live paths—without building a separate visualization stack.
+
+```bash
+# Inspect a raw model in the browser.
+simrig view-model path/to/robot.xml --port 8766
+
+# Preview a trained policy in the browser.
+simrig preview runs/<run-dir>/policy.params \
+  --env Go1JoystickFlatTerrain \
+  --port 8765
+```
+
+Open the printed local URL. The default viewer keeps camera controls independent
+from simulation and policy stepping; named MuJoCo cameras are available in a
+separate **Robot View** inset.
+
+## Examples
+
+| [Scripted IK reaching](examples/mujoco_reach/README.md#watch-the-interactive-showcase) | [Learned 360-degree reaching](examples/mujoco_reach/README.md#watch-the-learned-360-degree-policy) |
+|:---:|:---:|
+| [<img src="examples/mujoco_reach/assets/scripted-ik-preview.gif" alt="Scripted inverse-kinematics controller reaching targets in SimRig Live" width="420">](examples/mujoco_reach/README.md#watch-the-interactive-showcase) | [<img src="examples/mujoco_reach/assets/learned-policy-preview.gif" alt="Learned PPO policy reaching targets around the robot in SimRig Live" width="420">](examples/mujoco_reach/README.md#watch-the-learned-360-degree-policy) |
+| Scripted controller · no training required | Goal-conditioned PPO policy |
+
 ## From prompt to simulation
 
 ### Exchange a ball between two Franka Panda arms
@@ -35,8 +63,28 @@ continuous simulation cycle.
 <details>
 <summary><strong>Prompt</strong></summary>
 
-> Run a complete dual-Panda A→B→A ball exchange in MuJoCo and record it for the
-> README. Make the throw, catch, and return phases smooth and easy to follow.
+> Create a MuJoCo scene with two Franka Panda arms facing each other across a
+> clear workspace and a lightweight ball between them.
+>
+> First inspect the robot models and scene, then propose a physical task
+> contract for a ball exchange: initial poses, allowed contacts, release and
+> catch criteria, reset conditions, failures, episode horizon, and measurable
+> success metrics. Ask me to confirm any choices that materially affect what
+> counts as success.
+>
+> After confirmation, create an editable custom environment and validate it.
+> Start with a smoke run before any larger training run.
+>
+> Use staged learning if end-to-end throw-and-catch is not initially feasible:
+> establish a reliable reach/grasp/release baseline, then receiving/catching,
+> then the full exchange. Keep rewards, observations, reset logic, and
+> termination rules explicit in Python.
+>
+> Evaluate across multiple fixed seeds and show independent success metrics
+> rather than reward alone. Serve an interactive browser preview with a clear
+> side camera and a robot-camera view so the throw, catch, and return phases
+> are easy to inspect. Record a short demo only after the behavior is
+> reproducible.
 
 </details>
 

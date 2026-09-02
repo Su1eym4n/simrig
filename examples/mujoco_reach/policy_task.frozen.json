@@ -1,0 +1,339 @@
+{
+  "contract": {
+    "behavior": {
+      "objective": "Move ee_site to one world-frame target sampled around the robot and remain strictly within 0.05 m for five consecutive 0.02 s control ticks before the 200-tick horizon."
+    },
+    "compute": {
+      "abort_rules": [],
+      "gpu_hourly_cost": null,
+      "max_gpu_hours": 2.0,
+      "max_timesteps": 2000000,
+      "max_wall_time_sec": 3600
+    },
+    "environment": {
+      "backend": "mujoco-playground",
+      "ref": "examples/mujoco_reach/orbit_reach.py"
+    },
+    "episode": {
+      "horizon_steps": 200
+    },
+    "evaluation": {
+      "evaluator": {
+        "config": {
+          "target_sets": {
+            "displayed": {
+              "case_seed_start": 0,
+              "count": 30,
+              "generator_seed": 0
+            },
+            "heldout": {
+              "case_seed_start": 1000,
+              "count": 30,
+              "generator_seed": 9173
+            }
+          }
+        },
+        "plugin": "policy_evaluator.py"
+      },
+      "predicates": [
+        {
+          "event": "target_within_tolerance",
+          "failure_category": "task_failure",
+          "failure_code": "target_not_sustained",
+          "hold_steps": 5,
+          "id": "sustained_target_arrival",
+          "type": "sustained"
+        },
+        {
+          "body_a": "floor",
+          "body_b": "link1",
+          "failure_category": "forbidden_contact",
+          "failure_code": "link1_floor_contact",
+          "id": "no_floor_link1_contact",
+          "max_count": 0,
+          "type": "forbidden_contact"
+        },
+        {
+          "body_a": "floor",
+          "body_b": "link2",
+          "failure_category": "forbidden_contact",
+          "failure_code": "link2_floor_contact",
+          "id": "no_floor_link2_contact",
+          "max_count": 0,
+          "type": "forbidden_contact"
+        },
+        {
+          "body_a": "base",
+          "body_b": "link1",
+          "failure_category": "forbidden_contact",
+          "failure_code": "link1_base_contact",
+          "id": "no_base_link1_contact",
+          "max_count": 0,
+          "type": "forbidden_contact"
+        },
+        {
+          "body_a": "base",
+          "body_b": "link2",
+          "failure_category": "forbidden_contact",
+          "failure_code": "link2_base_contact",
+          "id": "no_base_link2_contact",
+          "max_count": 0,
+          "type": "forbidden_contact"
+        },
+        {
+          "failure_category": "invalid_state",
+          "failure_code": "mujoco_warning",
+          "id": "no_mujoco_warnings",
+          "metric": "mujoco_warning_count",
+          "operator": "==",
+          "type": "metric",
+          "value": 0
+        }
+      ],
+      "suites": {
+        "calibration": {
+          "group_by": [
+            "scenario"
+          ],
+          "requirements": [
+            {
+              "aggregate": "rate",
+              "metric": "task_success",
+              "operator": ">=",
+              "value": 0.9
+            }
+          ],
+          "scenarios": [
+            {
+              "name": "displayed",
+              "parameters": {
+                "target_set": "displayed"
+              },
+              "seeds": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5
+              ]
+            }
+          ]
+        },
+        "holdout": {
+          "group_by": [
+            "scenario"
+          ],
+          "requirements": [
+            {
+              "aggregate": "rate",
+              "metric": "task_success",
+              "operator": ">=",
+              "value": 0.9
+            }
+          ],
+          "scenarios": [
+            {
+              "name": "heldout",
+              "parameters": {
+                "target_set": "heldout"
+              },
+              "seeds": [
+                1000,
+                1001,
+                1002,
+                1003,
+                1004,
+                1005,
+                1006,
+                1007,
+                1008,
+                1009,
+                1010,
+                1011,
+                1012,
+                1013,
+                1014,
+                1015,
+                1016,
+                1017,
+                1018,
+                1019,
+                1020,
+                1021,
+                1022,
+                1023,
+                1024,
+                1025,
+                1026,
+                1027,
+                1028,
+                1029,
+                1030,
+                1031,
+                1032,
+                1033,
+                1034,
+                1035,
+                1036,
+                1037,
+                1038,
+                1039,
+                1040,
+                1041,
+                1042,
+                1043,
+                1044,
+                1045,
+                1046,
+                1047,
+                1048,
+                1049,
+                1050,
+                1051,
+                1052,
+                1053,
+                1054,
+                1055,
+                1056,
+                1057,
+                1058,
+                1059
+              ]
+            }
+          ]
+        },
+        "promotion": {
+          "group_by": [
+            "scenario"
+          ],
+          "requirements": [
+            {
+              "aggregate": "rate",
+              "metric": "task_success",
+              "operator": ">=",
+              "value": 0.9
+            }
+          ],
+          "scenarios": [
+            {
+              "name": "displayed",
+              "parameters": {
+                "target_set": "displayed"
+              },
+              "seeds": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30,
+                31,
+                32,
+                33,
+                34,
+                35,
+                36,
+                37,
+                38,
+                39,
+                40,
+                41,
+                42,
+                43,
+                44,
+                45,
+                46,
+                47,
+                48,
+                49,
+                50,
+                51,
+                52,
+                53,
+                54,
+                55,
+                56,
+                57,
+                58,
+                59
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "interfaces": {
+      "actions": "Three normalized absolute joint-position targets in [-1, 1], mapped to base_yaw, shoulder, and elbow actuator control ranges every 0.02 s. The applied normalized command is limited to 0.03 per axis from the current normalized joint position before MuJoCo advances ten 0.002 s physics steps.",
+      "observations": "Actor state has sin/cos(base yaw), shoulder and elbow angles, three joint velocities scaled by 0.1 and clipped to [-5, 5], world-frame target-minus-ee_site XYZ, and the previous applied command (13 values). The critic additionally receives ee_site XYZ, target XYZ, distance, and forbidden-collision state (21 values). These are simulator-state observations, not a hardware sensor contract."
+    },
+    "kind": "simrig.task-contract",
+    "name": "orbit-arm-sustained-reach",
+    "outcomes": {
+      "failure": "Invalid or non-finite simulator/policy state has highest precedence, followed by forbidden contact, then failure to sustain the target tolerance before the 200-tick timeout. The expected base-floor support contact is not a failure.",
+      "failure_taxonomy": [
+        "evaluator_error",
+        "invalid_state",
+        "forbidden_contact",
+        "safety_violation",
+        "timeout",
+        "task_failure",
+        "incomplete",
+        "unknown",
+        "success"
+      ],
+      "success": "Independent native MuJoCo measures ee_site world-frame Euclidean distance strictly below 0.05 m for at least five consecutive post-step control ticks, with zero forbidden arm-floor or arm-base contacts, zero MuJoCo warnings, and completion within 200 ticks / 4.0 s."
+    },
+    "reset": {
+      "native": "Evaluation uses the same seeded joint reset, then replaces the sampled goal with the deterministic displayed or held-out target assigned to that case. Policy preview preserves the current arm state when moving to the next displayed target; browser Reset restores the original seeded state and target 1.",
+      "training": "Zero joint velocity; base yaw uniform in [-pi, pi], shoulder uniform in [-1.2, -0.5] rad, elbow uniform in [0.8, 1.8] rad. Target angle is continuous uniform in [-pi, pi], radius in [0.22, 0.32] m, and world height in [0.08, 0.24] m."
+    },
+    "scene": {
+      "allowed_contacts": [
+        "floor with base"
+      ],
+      "assumptions": [
+        "The orbit_arm.xml shoulder is at world z=0.10 m and the two links total 0.38 m. Audited targets are 0.234-0.335 m from the shoulder and exactly reachable by the elbow-up IK control.",
+        "The target marker has contacts disabled. The expected floor-base support contact is allowed and does not count as an arm collision.",
+        "Success is derived from independent native-MuJoCo ee_site measurements and contact events, never training reward or episode completion.",
+        "Smoothness is an optimization preference represented by an action-rate cost; it is not an independent success condition.",
+        "The displayed and held-out target sets use the same physical envelope but different deterministic generator seeds. They test interpolation and reset diversity, not out-of-distribution hardware robustness.",
+        "A brief target crossing is a false positive for a proximity-only metric and must fail the five-tick sustained-arrival predicate."
+      ],
+      "forbidden_contacts": [
+        "floor with link1 or link2",
+        "base with link1 or link2"
+      ]
+    },
+    "schema_version": 2
+  },
+  "kind": "simrig.frozen-task-contract",
+  "schema_version": 2,
+  "sha256": "bf4dd8cd6b6d1a7dc5b245b3353c674e2b1214dc8627e2b3b47d4c6b19f2891d",
+  "source": "/Users/suleimansulaimanov/Desktop/text-to-train/examples/mujoco_reach/policy_task.json"
+}
