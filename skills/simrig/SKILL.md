@@ -7,7 +7,11 @@ description: Train, evaluate, and visualize MuJoCo and MuJoCo Playground robots 
 
 Use `simrig` as the control plane for model inspection, environment validation,
 PPO training, evaluation, and visualization. Edit ordinary MJCF and Python when
-a task or scene is custom; do not replace SimRig's runners or viewers.
+a task or scene is custom. Prefer the built-in viewers for ordinary inspection,
+policy playback, and live scripts. When the task benefits from a custom project
+interface, reuse SimRig's live browser scene and keep the surrounding UI in
+ordinary project code. Read [browser-viewers.md](references/browser-viewers.md)
+before building or modifying a custom viewer.
 
 ## Establish the artifact and intent
 
@@ -21,6 +25,7 @@ Classify the input before acting:
 | `policy.params` or `hf://...` checkpoint | Evaluate, then preview |
 | “Show this robot” | View model only |
 | Running MuJoCo Python controller | Add `LiveWebViewer` around its existing loop |
+| Custom experiment UI, sensor panels, maps, or task controls | Start with the matching built-in viewer; embed its live scene in a project-local UI when the built-in page does not fit |
 | “Train this robot to …” | Define the task, then use an existing or custom environment |
 | GPU IP / SSH host / “train on my Linux box” | `simrig remote` (not raw ssh) |
 | Custom terrain, props, targets, or contacts | Custom scene plus custom environment |
@@ -81,6 +86,10 @@ For an ordinary Python controller that already owns its `MjModel`, `MjData`,
 controls, and stepping, use `simrig.LiveWebViewer` inside that script. Share
 the viewer's lock around MuJoCo state mutations and call `sync()` after each
 completed step. Do not precompute or replay a trajectory just to visualize it.
+Use the normal page first. If the user asks for a task-specific dashboard, add
+`?embed=1` to the viewer URL to show only the live scene, then compose the
+additional interface in the active project. Let the project decide which extra
+data and controls are useful rather than expanding SimRig around one example.
 
 For a known environment, run:
 
@@ -303,6 +312,9 @@ Then preview the same checkpoint and environment:
 simrig preview runs/RUN/policy.params --env ENV_OR_PATH --port 8765
 ```
 
+`simrig preview` is `reset(seed)` plus policy stepping. Prefer that path over
+one-off preview scripts when a checkpoint and environment already exist.
+
 Use `--auto-reset` to begin a new episode after termination while preserving
 the terminal pose briefly; adjust that pause with `--auto-reset-delay`.
 
@@ -416,3 +428,4 @@ Return a compact evidence summary:
 | Bounded live-run check | `simrig eval-checkpoints RUN --contract CONTRACT` |
 | Reward probe / ranking | `simrig reward-probe REPORTS...` / `simrig rank-checkpoints REPORTS...` |
 | Policy preview | `simrig preview POLICY --env NAME --port 8765` |
+| Embed a browser scene | Open the printed viewer URL with `?embed=1` and compose the surrounding UI in project code |

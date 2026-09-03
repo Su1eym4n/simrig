@@ -302,6 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
     eval_suite_parser.add_argument("--suite", default="nominal")
     eval_suite_parser.add_argument("--evaluator", type=Path)
     eval_suite_parser.add_argument("--output", type=Path)
+    eval_suite_parser.add_argument("--hf-revision", help="Revision for hf:// policy checkpoints.")
+    eval_suite_parser.add_argument("--hf-token", help="Hugging Face token for private policy repos.")
     _add_eval_limit_args(eval_suite_parser)
     eval_suite_parser.add_argument("--json", action="store_true")
     eval_suite_parser.set_defaults(func=_cmd_eval_suite)
@@ -654,8 +656,13 @@ def _cmd_reward_probe(args: argparse.Namespace) -> int:
 
 
 def _cmd_eval_suite(args: argparse.Namespace) -> int:
-    result = run_evaluation_suite(
+    checkpoint = resolve_policy_checkpoint(
         args.checkpoint,
+        hf_revision=args.hf_revision,
+        hf_token=args.hf_token,
+    )
+    result = run_evaluation_suite(
+        checkpoint,
         contract_path=args.contract,
         suite_name=args.suite,
         evaluator_path=args.evaluator,
@@ -663,7 +670,7 @@ def _cmd_eval_suite(args: argparse.Namespace) -> int:
     )
     from simrig.io import unique_report_path
 
-    output = args.output or unique_report_path(f"{Path(args.checkpoint).name}-{args.suite}-eval-suite")
+    output = args.output or unique_report_path(f"{Path(checkpoint).name}-{args.suite}-eval-suite")
     save_json(output, result)
     _print(result, as_json=args.json)
     return 0 if result["passed"] else 1

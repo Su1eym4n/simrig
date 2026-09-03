@@ -31,6 +31,8 @@ class LiveWebViewerTests(unittest.TestCase):
         self.assertIn("Clear Trail", page)
         self.assertIn("Show Trail", page)
         self.assertIn("hide-trail", page)
+        self.assertIn("simrig-sidebar-toggle", page)
+        self.assertIn('<details class="simrig-debug">', page)
 
     def test_live_viewer_serves_script_owned_data(self) -> None:
         try:

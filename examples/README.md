@@ -5,8 +5,7 @@ repository root; these assets are not installed by the PyPI wheel.
 
 | Example | Purpose | Runtime |
 |---|---|---|
-| [Learned reaching acceptance](learned_reach/README.md) | Train a real policy, evaluate physical outcomes against controls and held-out seeds, and preview the same case | `.[playground]`, CPU or GPU |
-| [MuJoCo reaching](mujoco_reach/README.md) | Evaluate and visualize scripted controllers using measured simulator outcomes | `.[mujoco]`, CPU |
+| [MuJoCo reaching](mujoco_reach/README.md) | Evaluate and visualize scripted IK controllers using measured simulator outcomes | `.[mujoco]`, CPU |
 | [Reaching environment](demo_reach.py) | Validate, smoke, and train a custom MJX task | `.[playground]`, CPU smoke or GPU |
 | [Vision cartpole](vision_cartpole.py) | Render pixels and train/evaluate a vision policy | `.[playground]`, CUDA GPU + Warp for runtime |
 

@@ -57,6 +57,29 @@ class PresetTests(unittest.TestCase):
 
             self.assertEqual(resolve_network_factory(checkpoint), network)
 
+    def test_resolve_network_factory_follows_snapshot_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blobs = root / "blobs"
+            snapshot = root / "snapshot"
+            blobs.mkdir()
+            snapshot.mkdir()
+            blob = blobs / "params-hash"
+            blob.write_text("params\n", encoding="utf-8")
+            checkpoint = snapshot / "policy.params"
+            checkpoint.symlink_to(blob)
+            network = {"policy_hidden_layer_sizes": [128, 128]}
+            (snapshot / "config.json").write_text(
+                json.dumps({"config": {"network_factory": network}}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(resolve_network_factory(checkpoint), network)
+            self.assertEqual(
+                resolve_network_factory(checkpoint.resolve())["policy_hidden_layer_sizes"],
+                (512, 256, 128),
+            )
+
     def test_resolve_small_network_reads_run_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp)

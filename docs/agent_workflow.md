@@ -66,8 +66,8 @@ For learned Playground policies, use `PlaygroundEvaluator` with task-owned
 scenario resets and physical measurements. The shared runtime restores final
 parameters or Orbax checkpoints and retains the recorded observation
 preprocessing. It currently requires `action_repeat=1`; unsupported control
-rates fail explicitly. See the [learned reaching reference](../examples/learned_reach/README.md)
-for a runnable adapter, baselines, frozen suites, and observed limitations.
+rates fail explicitly. See the [MuJoCo controller evaluation example](../examples/mujoco_reach/README.md)
+for a runnable scripted-control adapter and measured outcomes.
 
 Missing metrics/contact coverage are insufficient evidence, never an automatic
 pass. Compare a positive control and deliberately weak/misleading controls
@@ -163,6 +163,11 @@ trajectory just for visualization.
 Guard mutations with `viewer.lock`, call `viewer.sync()` after completed steps,
 and optionally select a named `tracking_body` for a browser-side path trail.
 The script remains responsible for stepping and real-time pacing.
+
+Use the built-in page when it covers the request. For a task-specific project
+interface, open the viewer URL with `?embed=1` and place that live scene inside
+the project's own page. The embedded form hides SimRig's standard chrome; the
+project remains responsible for any additional data, controls, or layout.
 
 ## Custom Env Module
 

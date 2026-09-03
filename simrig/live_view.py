@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from simrig.browser_shell import viewer_styles
+from simrig.browser_shell import viewer_chrome_script, viewer_styles
 from simrig.three_scene import geom_transforms, scene_payload
 
 
@@ -356,8 +356,10 @@ def _live_html() -> str:
     <button class="secondary" id="reset-camera">Reset Camera</button>
     <button class="secondary" id="clear-trail">Clear Trail</button>
     <button class="secondary" id="hide-trail">Show Trail</button>
-    <h1 style="margin-top:18px">Script State</h1>
-    <pre id="status">loading</pre>
+    <details class="simrig-debug">
+      <summary>Script State</summary>
+      <pre id="status">loading</pre>
+    </details>
   </aside>
   <script type="module">
     import * as THREE from 'three';
@@ -637,6 +639,9 @@ def _live_html() -> str:
       console.error(err);
     }
   </script>
+"""
+        + viewer_chrome_script()
+        + """
 </body>
 </html>
 """

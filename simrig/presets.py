@@ -190,9 +190,28 @@ def checkpoint_config(checkpoint: Path | str) -> dict[str, Any] | None:
     return config if isinstance(config, dict) else None
 
 
+def normalize_checkpoint_path(checkpoint: Path | str) -> Path:
+    """Return the checkpoint file without resolving Hugging Face blob symlinks."""
+    path = Path(checkpoint).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if path.is_dir() and (path / "policy.params").is_file():
+        path = path / "policy.params"
+    return path
+
+
 def checkpoint_config_path(checkpoint: Path | str) -> Path:
     """Locate SimRig metadata for final parameters or a numeric Orbax checkpoint."""
-    path = Path(checkpoint).expanduser().resolve()
+    path = Path(checkpoint).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    # Hugging Face snapshots symlink policy.params to a content-addressed blob.
+    # config.json sits next to the snapshot name, so do not resolve that file.
+    if path.is_file():
+        sibling = path.parent / "config.json"
+        if sibling.is_file():
+            return sibling
+    path = path.resolve()
     if path.is_dir() and (path / "policy.params").is_file():
         return path / "config.json"
     if path.is_dir() and path.parent.name == "checkpoints":

@@ -24,6 +24,7 @@ from simrig.browser_shell import (
     camera_interaction_script,
     frame_poll_script,
     threejs_agent_camera_script,
+    viewer_chrome_script,
     viewer_styles,
 )
 from simrig.rollout import PolicyRuntime, validate_state
@@ -136,6 +137,11 @@ class PolicyPreviewSession:
         self._lock = threading.Lock()
         self._last_frame_jpeg: bytes | None = None
         self._scene_payload: dict[str, Any] | None = None
+        self._rollout_epoch = 0
+        self._jax_thread_id = threading.get_ident()
+        self._pending_reset = False
+        self._pending_command = False
+        self._compiling = False
 
         self.jax, self.jp = self.rollout.jax, self.rollout.jp
         try:
@@ -162,6 +168,8 @@ class PolicyPreviewSession:
                 f"received {len(self.command)}."
             )
         self._apply_current_command()
+        self._snapshot_command_unlocked()
+        self._warmup_policy_unlocked(seed)
 
         self.mj_data = self.mujoco.MjData(self.env.mj_model)
         self._copy_state_to_mujoco_unlocked()
@@ -189,14 +197,7 @@ class PolicyPreviewSession:
         self.episode_horizon = _episode_horizon(self.env) or _checkpoint_episode_horizon(checkpoint)
         self._rollout_thread: threading.Thread | None = None
         self._running = True
-        if self.render_mode == "threejs":
-            self._rollout_thread = threading.Thread(
-                target=self._run_rollout,
-                name="simrig-preview-rollout",
-                daemon=True,
-            )
-            self._rollout_thread.start()
-        else:
+        if self.render_mode != "threejs":
             self._frame_pump = MujocoFramePump(
                 self.mujoco,
                 self.env.mj_model,
@@ -216,7 +217,13 @@ class PolicyPreviewSession:
 
     def reset(self) -> None:
         with self._lock:
-            self._reset_unlocked()
+            if threading.get_ident() == self._jax_thread_id:
+                self._reset_unlocked()
+                if getattr(self, "mj_data", None) is not None:
+                    self._copy_state_to_mujoco_unlocked()
+                return
+            self._pending_reset = True
+            self._rollout_epoch += 1
 
     def set_paused(self, paused: bool) -> None:
         with self._lock:
@@ -233,7 +240,10 @@ class PolicyPreviewSession:
                         f"received {len(command)}."
                     )
             self.command = command
-            self._apply_current_command()
+            if threading.get_ident() == self._jax_thread_id:
+                self._apply_current_command()
+                return
+            self._pending_command = True
 
     def set_auto_reset(self, enabled: bool) -> None:
         with self._lock:
@@ -306,7 +316,12 @@ class PolicyPreviewSession:
             total_reward=self.total_reward,
             done=self.done,
             episode=self.episode,
-            episode_state="ended" if self.done else "paused" if self.paused else "running",
+            episode_state=(
+                "ended" if self.done
+                else "paused" if self.paused
+                else "compiling" if getattr(self, "_compiling", False)
+                else "running"
+            ),
             episode_outcome=(
                 "pending" if not self.done else "success" if success is True
                 else "failure" if success is False else "unknown"
@@ -343,11 +358,15 @@ class PolicyPreviewSession:
             return None
         if self.command is not None:
             return list(self.command)
+        return getattr(self, "_command_snapshot", None)
+
+    def _snapshot_command_unlocked(self) -> None:
         info = getattr(self.state, "info", {})
         values = info.get("command") if isinstance(info, Mapping) else None
         if values is None:
-            return None
-        return np.asarray(values, dtype=float).reshape(-1).tolist()
+            self._command_snapshot = None
+            return
+        self._command_snapshot = np.asarray(values, dtype=float).reshape(-1).tolist()
 
     def _renderer_stats(self) -> dict[str, Any]:
         if self._frame_pump is not None:
@@ -425,8 +444,9 @@ class PolicyPreviewSession:
             self._frame_pump.close()
         if self._agent_frame_pump is not None:
             self._agent_frame_pump.close()
-        if self._rollout_thread is not None:
-            self._rollout_thread.join(timeout=2.0)
+        thread = self._rollout_thread
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=2.0)
         self.rollout.close()
 
     def _initial_agent_camera(self, requested: str | int | None) -> str | None:
@@ -453,14 +473,63 @@ class PolicyPreviewSession:
         while self._running:
             started = time.monotonic()
             try:
-                with self._lock:
-                    self._advance_rollout()
+                self._tick_rollout()
             except Exception as exc:
                 self.renderer_error = str(exc)
             elapsed = time.monotonic() - started
             time.sleep(max(0.0, interval - elapsed))
 
+    def _flush_pending_unlocked(self) -> bool:
+        """Apply HTTP-thread requests on the JAX owner thread. True means skip stepping."""
+        if self._pending_reset:
+            self._pending_reset = False
+            self._reset_unlocked()
+            return True
+        if self._pending_command:
+            self._pending_command = False
+            self._apply_current_command()
+            self._snapshot_command_unlocked()
+        return False
+
+    def _tick_rollout(self) -> None:
+        """Step the policy without holding the UI lock during JAX execution."""
+        with self._lock:
+            if self._flush_pending_unlocked():
+                self._copy_state_to_mujoco_unlocked()
+                return
+            if (
+                self.done
+                and self.auto_reset
+                and not self.paused
+                and self._episode_ended_at is not None
+                and time.monotonic() - self._episode_ended_at >= self.auto_reset_delay
+            ):
+                self._reset_unlocked()
+            if self.paused or self.done:
+                return
+            epoch = self._rollout_epoch
+            state, rng, command, frame_skip = (
+                self.state, self.rng, self.command, self.frame_skip,
+            )
+        for _ in range(frame_skip):
+            state, rng, _ = self.rollout.advance(state, rng, command=command)
+            with self._lock:
+                if self._rollout_epoch != epoch:
+                    return
+                self.state, self.rng = state, rng
+                self._record_step_unlocked()
+                self._snapshot_command_unlocked()
+                if self.done:
+                    self._copy_state_to_mujoco_unlocked()
+                    return
+                self._copy_state_to_mujoco_unlocked()
+            if bool(state.done):
+                break
+
     def _advance_rollout(self) -> None:
+        if self._flush_pending_unlocked():
+            self._copy_state_to_mujoco_unlocked()
+            return
         if (
             self.done
             and self.auto_reset
@@ -476,10 +545,7 @@ class PolicyPreviewSession:
                     break
         self._copy_state_to_mujoco_unlocked()
 
-    def _step_once_unlocked(self) -> None:
-        self.state, self.rng, _ = self.rollout.advance(
-            self.state, self.rng, command=self.command,
-        )
+    def _record_step_unlocked(self) -> None:
         self.command_applied = self.command is not None
         self.last_reward = float(self.state.reward)
         self.total_reward += self.last_reward
@@ -493,8 +559,36 @@ class PolicyPreviewSession:
             self.last_episode_reward = self.total_reward
             self._episode_ended_at = time.monotonic()
 
+    def _step_once_unlocked(self) -> None:
+        self.state, self.rng, _ = self.rollout.advance(
+            self.state, self.rng, command=self.command,
+        )
+        self._record_step_unlocked()
+        self._snapshot_command_unlocked()
+
+    def _warmup_policy_unlocked(self, seed: int) -> None:
+        """Compile policy and env.step on this thread before the browser starts polling."""
+        self._compiling = True
+        print("simrig preview: compiling policy (first step)...", flush=True)
+        self.state, self.rng, _ = self.rollout.advance(self.state, self.rng)
+        self.state, self.rng = self.rollout.reset(seed)
+        if self.reset_transform is not None:
+            self.state = self.reset_transform(self.env, self.state)
+            validate_state(self.state, self.env.observation_size)
+        self._apply_current_command()
+        self._snapshot_command_unlocked()
+        self.step_count = 0
+        self.total_reward = 0.0
+        self.last_reward = 0.0
+        self.done = False
+        self.success_values.clear()
+        self._episode_ended_at = None
+        self._compiling = False
+        print("simrig preview: compilation done", flush=True)
+
     def _reset_unlocked(self) -> None:
         self.rng, reset_rng = self.jax.random.split(self.rng)
+        self._rollout_epoch += 1
         self.state = self.rollout.reset_key(reset_rng)
         if self.reset_transform is not None:
             self.state = self.reset_transform(self.env, self.state)
@@ -508,6 +602,7 @@ class PolicyPreviewSession:
         self._episode_ended_at = None
         self.command_controls = _command_controls(self.env, self.state)
         self._apply_current_command()
+        self._snapshot_command_unlocked()
 
     def _apply_current_command(self) -> None:
         if self.command is None:
@@ -517,13 +612,15 @@ class PolicyPreviewSession:
         self.command_applied = True
 
     def _copy_state_to_mujoco_unlocked(self) -> None:
-        self.mj_data.qpos[:] = np.asarray(self.state.data.qpos)
-        self.mj_data.qvel[:] = np.asarray(self.state.data.qvel)
+        source = self.state.data
+        self.mj_data.time = float(np.asarray(source.time))
+        self.mj_data.qpos[:] = np.asarray(source.qpos)
+        self.mj_data.qvel[:] = np.asarray(source.qvel)
         for name in ("mocap_pos", "mocap_quat"):
-            source = getattr(self.state.data, name, None)
+            value = getattr(source, name, None)
             target = getattr(self.mj_data, name, None)
-            if source is not None and target is not None:
-                target[:] = np.asarray(source)
+            if value is not None and target is not None:
+                target[:] = np.asarray(value)
         self.mujoco.mj_forward(self.env.mj_model, self.mj_data)
 
     def _tracking_body_id(self) -> int:
@@ -853,17 +950,35 @@ def serve_policy_preview(
                 self.send_header("Content-Encoding", content_encoding)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"SimRig preview: http://{host}:{port}")
+    server.daemon_threads = True
+    print(f"SimRig preview: http://{host}:{port}", flush=True)
+    http_thread: threading.Thread | None = None
     try:
-        server.serve_forever()
+        if session.render_mode == "threejs":
+            # JAX/CUDA work stays on this thread. HTTP polling runs beside it.
+            http_thread = threading.Thread(
+                target=server.serve_forever,
+                name="simrig-preview-http",
+                daemon=True,
+            )
+            http_thread.start()
+            session._run_rollout()
+        else:
+            server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         session.close()
+        server.shutdown()
         server.server_close()
+        if http_thread is not None and http_thread.is_alive():
+            http_thread.join(timeout=2.0)
 
 
 def _command_from_query(query: dict[str, list[str]]) -> list[float] | None:
@@ -904,6 +1019,7 @@ def _threejs_html() -> str:
     #episode-state.failure { border-color: #ef4444; background: #2a1118; color: #fecaca; }
     #episode-state.success { border-color: #22c55e; background: #10251b; color: #bbf7d0; }
     #episode-state.paused { border-color: #f59e0b; color: #fde68a; }
+    #episode-state.compiling { border-color: #38bdf8; color: #bae6fd; }
     #run-facts { color: #94a3b8; font-size: 12px; line-height: 1.55; margin-bottom: 14px; }
     #command-section[hidden] { display: none; }
     #command-section { border-top: 1px solid #263244; padding-top: 12px; margin-top: 4px; }
@@ -947,8 +1063,10 @@ def _threejs_html() -> str:
     <button class="secondary" id="resume">Resume</button>
     <button class="secondary" id="reset">Reset</button>
     <button class="secondary" id="reset-camera">Reset Camera</button>
-    <h1 style="margin-top:18px">Status</h1>
-    <pre id="status">loading</pre>
+    <details class="simrig-debug">
+      <summary>Raw State</summary>
+      <pre id="status">loading</pre>
+    </details>
   </aside>
   <script type="module">
     import * as THREE from 'three';
@@ -1296,6 +1414,9 @@ def _threejs_html() -> str:
       console.error(err);
     }
   </script>
+"""
+        + viewer_chrome_script()
+        + """
 </body>
 </html>
 """
@@ -1314,6 +1435,7 @@ def _frame_html() -> str:
     #episode-state.failure {{ border-color: #ef4444; background: #2a1118; color: #fecaca; }}
     #episode-state.success {{ border-color: #22c55e; background: #10251b; color: #bbf7d0; }}
     #episode-state.paused {{ border-color: #f59e0b; color: #fde68a; }}
+    #episode-state.compiling {{ border-color: #38bdf8; color: #bae6fd; }}
     #run-facts {{ color: #94a3b8; font-size: 12px; line-height: 1.55; margin-bottom: 14px; }}
     #command-section[hidden] {{ display: none; }}
     #command-section {{ border-top: 1px solid #263244; padding-top: 12px; margin-top: 4px; }}
@@ -1345,8 +1467,10 @@ def _frame_html() -> str:
     <button class="secondary" onclick="call('/pause')">Pause</button>
     <button class="secondary" onclick="call('/resume')">Resume</button>
     <button class="secondary" onclick="call('/reset')">Reset</button>
-    <h1 style="margin-top:18px">Status</h1>
-    <pre id="status">loading</pre>
+    <details class="simrig-debug">
+      <summary>Raw State</summary>
+      <pre id="status">loading</pre>
+    </details>
   </aside>
   <script>
     const frame = document.getElementById('frame');
@@ -1432,6 +1556,7 @@ def _frame_html() -> str:
     refreshFrame();
     refreshStatus();
   </script>
+  {viewer_chrome_script()}
 </body>
 </html>
 """

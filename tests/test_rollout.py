@@ -100,3 +100,9 @@ class RolloutValidityTests(unittest.TestCase):
                 self.assertEqual(normalized, [])
                 with self.assertRaisesRegex(ValueError, "Environment differs"):
                     PolicyRuntime(checkpoint, env_name="OtherTask")
+                with self.assertWarns(RuntimeWarning):
+                    PolicyRuntime(
+                        checkpoint,
+                        env_name="OtherTask",
+                        allow_runtime_mismatch=True,
+                    )

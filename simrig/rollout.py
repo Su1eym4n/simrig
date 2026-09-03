@@ -11,8 +11,14 @@ from collections.abc import Mapping
 import hashlib
 from pathlib import Path
 from typing import Any, Callable
+import warnings
 
-from simrig.presets import checkpoint_config, resolve_network_factory, resolve_network_type
+from simrig.presets import (
+    checkpoint_config,
+    normalize_checkpoint_path,
+    resolve_network_factory,
+    resolve_network_type,
+)
 from simrig.runtime import verify_checkpoint_runtime
 
 
@@ -92,13 +98,12 @@ class PolicyRuntime:
 
         _validate_backend(backend)
         self.env_name = env_name
+        self._allow_runtime_mismatch = bool(allow_runtime_mismatch)
         self.checkpoint: Path | None = None
         self.runtime_compatibility: dict[str, Any] = {}
         self.config: dict[str, Any] = {}
         if checkpoint is not None:
-            path = Path(checkpoint).expanduser().resolve()
-            if path.is_dir() and (path / "policy.params").is_file():
-                path = path / "policy.params"
+            path = normalize_checkpoint_path(checkpoint)
             if not path.exists():
                 raise FileNotFoundError(f"Checkpoint not found: {path}")
             self.checkpoint = path
@@ -150,6 +155,16 @@ class PolicyRuntime:
                 params = brax_model.load_params(str(self.checkpoint))
             self.policy = self.jax.jit(networks.make_inference_fn(network)(params, deterministic=True))
 
+    def _artifact_mismatch(self, message: str) -> None:
+        if self._allow_runtime_mismatch:
+            warnings.warn(
+                f"{message}; --allow-runtime-mismatch makes this rollout qualitative only.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return
+        raise ValueError(message)
+
     def _verify_environment(self) -> None:
         recorded = self.config.get("env_ref")
         source = (self.config.get("provenance") or {}).get("source") or {}
@@ -159,16 +174,24 @@ class PolicyRuntime:
                 expected_hash = source.get("env_module_sha256")
                 if expected_hash:
                     if not active.is_file() or hashlib.sha256(active.read_bytes()).hexdigest() != expected_hash:
-                        raise ValueError("Environment source differs from the checkpoint's recorded module")
+                        self._artifact_mismatch(
+                            "Environment source differs from the checkpoint's recorded module"
+                        )
                 elif active.resolve() != Path(str(recorded)).expanduser().resolve():
-                    raise ValueError("Environment differs from the checkpoint's recorded environment")
+                    self._artifact_mismatch(
+                        "Environment differs from the checkpoint's recorded environment"
+                    )
             elif self.env_name != recorded:
-                raise ValueError("Environment differs from the checkpoint's recorded environment")
+                self._artifact_mismatch(
+                    "Environment differs from the checkpoint's recorded environment"
+                )
         expected_model = source.get("model_xml_sha256")
         if expected_model:
             model_path = Path(str(getattr(self.env, "xml_path", ""))).expanduser()
             if not model_path.is_file() or hashlib.sha256(model_path.read_bytes()).hexdigest() != expected_model:
-                raise ValueError("Model XML differs from the checkpoint's recorded model")
+                self._artifact_mismatch(
+                    "Model XML differs from the checkpoint's recorded model"
+                )
 
     def reset(self, seed: int) -> tuple[Any, Any]:
         if type(seed) is not int or seed < 0:
