@@ -10,6 +10,7 @@ SIMPLE_XML = """\
     <body name="tracked" pos="0 0 0.2">
       <joint name="slide" type="slide" axis="1 0 0"/>
       <geom type="sphere" size="0.05"/>
+      <site name="tip" pos="0.1 0 0"/>
     </body>
   </worldbody>
 </mujoco>
@@ -25,9 +26,13 @@ class LiveWebViewerTests(unittest.TestCase):
         self.assertIn("three@0.184.0", page)
         self.assertIn("/scene.json", page)
         self.assertIn("/state.json", page)
+        self.assertIn("/reset", page)
+        self.assertIn("Reset Simulation", page)
         self.assertIn("Clear Trail", page)
         self.assertIn("Show Trail", page)
         self.assertIn("hide-trail", page)
+        self.assertIn("simrig-sidebar-toggle", page)
+        self.assertIn('<details class="simrig-debug">', page)
 
     def test_live_viewer_serves_script_owned_data(self) -> None:
         try:
@@ -45,6 +50,7 @@ class LiveWebViewerTests(unittest.TestCase):
             data,
             name="unit script",
             tracking_body="tracked",
+            allow_reset=True,
             mujoco_module=mujoco,
         )
         try:
@@ -62,8 +68,33 @@ class LiveWebViewerTests(unittest.TestCase):
             self.assertAlmostEqual(payload["tracking_position"][0], 0.25)
             viewer._note_client()
             self.assertTrue(viewer.wait_for_client(timeout=0.1))
+            self.assertFalse(viewer.consume_reset_request())
+            viewer.request_reset()
+            self.assertTrue(viewer.consume_reset_request())
+            self.assertFalse(viewer.consume_reset_request())
         finally:
             viewer.close()
+
+    def test_live_viewer_can_track_a_site(self) -> None:
+        try:
+            import mujoco
+            from simrig.live_view import LiveWebViewer
+        except (ImportError, RuntimeError) as exc:
+            self.skipTest(str(exc))
+
+        model = mujoco.MjModel.from_xml_string(SIMPLE_XML)
+        data = mujoco.MjData(model)
+        data.qpos[0] = 0.25
+        mujoco.mj_forward(model, data)
+        viewer = LiveWebViewer(
+            model,
+            data,
+            tracking_site="tip",
+            mujoco_module=mujoco,
+        )
+        payload = viewer.state_payload()
+        self.assertEqual(payload["tracking_site"], "tip")
+        self.assertAlmostEqual(payload["tracking_position"][0], 0.35)
 
 
 if __name__ == "__main__":

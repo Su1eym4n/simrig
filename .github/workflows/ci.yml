@@ -62,11 +62,6 @@ jobs:
             --steps 20 \
             --seed 5
 
-      - name: Check learned policy loading, independent evaluation, and preview parity
-        env:
-          SIMRIG_TEST_POLICY: /tmp/simrig-ci-run/policy.params
-        run: python -m pytest tests/test_learned_reach.py -q
-
   package:
     runs-on: ubuntu-latest
 

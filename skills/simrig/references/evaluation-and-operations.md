@@ -268,10 +268,10 @@ parameters, a run directory, or a numeric Orbax checkpoint directory. A `.py`
 input explicitly selects a trusted scripted control exposing
 `make_controller(env) -> callable(state, rng)`; never describe it as learned.
 
-See `examples/learned_reach/evaluator.py` for physical measurements and
-`examples/learned_reach/README.md` for training, controls, held-out evaluation,
-and a preview using the same target/seed. Keep the task-specific logic there,
-not in SimRig's generic adapter.
+See `examples/mujoco_reach/evaluator.py` and
+`examples/mujoco_reach/README.md` for measured scripted-control evaluation.
+Keep task-specific measurement logic in the example, not in SimRig's generic
+adapter.
 
 ### Evidence and report validity
 
@@ -364,5 +364,5 @@ environment defects by immediately increasing training steps.
 
 The shared Playground rollout currently requires recorded `action_repeat=1`.
 Other values fail explicitly instead of silently changing the policy control
-rate. The integration is validated on CPU state observations; vision/GPU and
-hardware acceptance are not established by the learned reaching reference.
+rate. CPU state-observation integration is covered by CI smoke and eval;
+vision/GPU and hardware acceptance need separate evidence.

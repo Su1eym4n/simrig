@@ -12,12 +12,23 @@ import importlib.util
 import json
 from pathlib import Path
 import random
+import sys
 import time
+
+EXAMPLE_DIR = Path(__file__).resolve().parent
+if str(EXAMPLE_DIR) not in sys.path:
+    sys.path.insert(0, str(EXAMPLE_DIR))
+from targets import seeded_targets
 
 
 MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "simple_arm.xml"
+PREVIEW_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "orbit_arm.xml"
 CONTROL_DT = 0.02
 SUCCESS_DISTANCE = 0.05
+PREVIEW_COMMAND_DELTA = 0.035
+PREVIEW_HOLD_TICKS = 8
+PREVIEW_FRAME_DELAY_SEC = 0.04
+PREVIEW_TARGET_COUNT = 30
 EVALUATOR_SPEC = {
     "name": "mujoco-simple-arm-reach",
     "version": "1.0.0",
@@ -39,11 +50,22 @@ def _load_controller(path):
 
 
 def evaluate(request):
-    """SimRig's evaluator entry point; the same rollout also powers the preview."""
+    """SimRig's evaluator entry point for the original two-joint task."""
     return rollout(request)
 
 
-def rollout(request, *, preview=False):
+def _preview_targets(seed, *, np):
+    """Return 30 seeded 3D targets scattered around every side of the base."""
+    del np
+    return seeded_targets(seed, count=PREVIEW_TARGET_COUNT)
+
+
+def _normalized_position_targets(qpos, low, high, *, np):
+    positions = np.asarray(qpos, dtype=float)
+    return 2 * (positions - low) / (high - low) - 1
+
+
+def rollout(request, *, preview=False, preview_port=0):
     import mujoco
     import numpy as np
 
@@ -53,15 +75,24 @@ def rollout(request, *, preview=False):
     if type(max_steps) is not int or not 1 <= max_steps <= 200:
         raise ValueError("This example requires a horizon of 1..200 control steps")
     controller = _load_controller(request["checkpoint"])
-    model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+    active_model_path = PREVIEW_MODEL_PATH if preview else MODEL_PATH
+    model = mujoco.MjModel.from_xml_path(str(active_model_path))
     data = mujoco.MjData(model)
     target = np.asarray(request["parameters"]["target"], dtype=float)
     if target.shape != (3,) or not np.isfinite(target).all():
         raise ValueError("Target must contain three finite world-frame coordinates")
     rng = random.Random(request["seed"])
-    # Match demo_reach's reset range, not its JAX RNG's exact samples.
-    data.qpos[:] = [rng.uniform(-0.4, 0.4) for _ in range(model.nq)]
+    # Match demo_reach's reset range for evaluation. The showcase starts centered.
+    initial_qpos = (
+        np.zeros(model.nq)
+        if preview
+        else np.asarray([rng.uniform(-0.4, 0.4) for _ in range(model.nq)])
+    )
+    data.qpos[:] = initial_qpos
     target_id = model.body("target").mocapid[0]
+    targets = _preview_targets(request["seed"], np=np) if preview else (target,)
+    target_index = 0
+    target = targets[target_index]
     data.mocap_pos[target_id] = target
     mujoco.mj_forward(model, data)
     ee_id = model.site("ee_site").id
@@ -71,21 +102,59 @@ def rollout(request, *, preview=False):
     low, high = model.actuator_ctrlrange.T
     initial_error = float(np.linalg.norm(data.site_xpos[ee_id] - target))
     errors, events = [], []
+    preview_command = _normalized_position_targets(data.qpos[:model.nu], low, high, np=np)
+    hold_ticks = 0
     viewer = None
     if preview:
         from simrig import LiveWebViewer
 
-        viewer = LiveWebViewer(model, data, name="MuJoCo reaching", tracking_body="link2")
+        viewer = LiveWebViewer(
+            model,
+            data,
+            name="MuJoCo reaching",
+            port=preview_port,
+            tracking_site="ee_site",
+            allow_reset=True,
+        )
     with viewer if viewer is not None else nullcontext():
         if viewer is not None:
             viewer.wait_for_client(timeout=15)
-        for tick in range(max_steps):
+        tick = 0
+        while preview or tick < max_steps:
+            if viewer is not None and viewer.consume_reset_request():
+                with viewer.lock:
+                    mujoco.mj_resetData(model, data)
+                    data.qpos[:] = initial_qpos
+                    target_index = 0
+                    target = targets[target_index]
+                    data.mocap_pos[target_id] = target
+                    mujoco.mj_forward(model, data)
+                    preview_command = _normalized_position_targets(
+                        data.qpos[:model.nu], low, high, np=np
+                    )
+                    hold_ticks = 0
+                    viewer.sync(
+                        target_error_m=float(np.linalg.norm(data.site_xpos[ee_id] - target)),
+                        reached=False,
+                        target_index=1,
+                        target_count=len(targets),
+                        phase="reset",
+                    )
             with viewer.lock if viewer is not None else nullcontext():
-                command = np.asarray(controller(model, data, target.copy()), dtype=float)
-                if command.shape != (model.nu,) or not np.isfinite(command).all():
+                goal_command = np.asarray(controller(model, data, target.copy()), dtype=float)
+                if goal_command.shape != (model.nu,) or not np.isfinite(goal_command).all():
                     raise ValueError("Controller must return one finite action per actuator")
-                if np.any(np.abs(command) > 1):
+                if np.any(np.abs(goal_command) > 1):
                     raise ValueError("Normalized actions must lie in [-1, 1]")
+                if preview:
+                    command = np.clip(
+                        goal_command,
+                        preview_command - PREVIEW_COMMAND_DELTA,
+                        preview_command + PREVIEW_COMMAND_DELTA,
+                    )
+                    preview_command = command
+                else:
+                    command = goal_command
                 data.ctrl[:] = low + (command + 1) * 0.5 * (high - low)
                 for _ in range(n_substeps):
                     mujoco.mj_step(model, data)
@@ -94,18 +163,45 @@ def rollout(request, *, preview=False):
                 if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                     raise ValueError("MuJoCo produced a non-finite state")
                 error = float(np.linalg.norm(data.site_xpos[ee_id] - target))
-                errors.append(error)
+                if not preview:
+                    errors.append(error)
                 reached = error < SUCCESS_DISTANCE
-                events.append({"kind": "signal", "name": "target_reached", "step": tick, "active": reached})
+                if not preview:
+                    events.append({
+                        "kind": "signal",
+                        "name": "target_reached",
+                        "step": tick,
+                        "active": reached,
+                    })
                 if viewer is not None:
-                    viewer.sync(target_error_m=error, reached=reached)
+                    viewer.sync(
+                        target_error_m=error,
+                        reached=reached,
+                        target_index=target_index + 1,
+                        target_count=len(targets),
+                        phase="holding target" if reached else "moving to target",
+                    )
             if viewer is not None:
-                time.sleep(CONTROL_DT)
+                time.sleep(PREVIEW_FRAME_DELAY_SEC)
+            tick += 1
             if reached:
-                break
-        if viewer is not None:
-            viewer.mark_complete(target_error_m=errors[-1], reached=reached)
-            time.sleep(5)
+                if not preview:
+                    break
+                hold_ticks += 1
+                if hold_ticks >= PREVIEW_HOLD_TICKS:
+                    target_index = (target_index + 1) % len(targets)
+                    target = targets[target_index]
+                    hold_ticks = 0
+                    with viewer.lock:
+                        data.mocap_pos[target_id] = target
+                        mujoco.mj_forward(model, data)
+                        viewer.sync(
+                            target_error_m=float(np.linalg.norm(data.site_xpos[ee_id] - target)),
+                            reached=False,
+                            target_index=target_index + 1,
+                            target_count=len(targets),
+                            phase="restarting route" if target_index == 0 else "next target",
+                        )
     return {
         "metrics": {
             "initial_target_error": initial_error,
@@ -128,6 +224,12 @@ def main():
     parser.add_argument("--scenario", choices=("nominal", "boundary"), default="nominal")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Browser port; 0 selects an available local port automatically.",
+    )
     args = parser.parse_args()
     task = json.loads((Path(__file__).parent / "task.json").read_text())
     scenarios = task["evaluation"]["suites"]["promotion"]["scenarios"]
@@ -137,7 +239,14 @@ def main():
         "environment": task["environment"]["ref"], "parameters": scenario["parameters"],
         "max_steps": task["episode"]["horizon_steps"], "seed": args.seed,
     }
-    print(json.dumps(rollout(request, preview=args.preview), indent=2))
+    try:
+        result = rollout(request, preview=args.preview, preview_port=args.port)
+    except KeyboardInterrupt:
+        if args.preview:
+            print("\nPreview stopped.")
+            return
+        raise
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

@@ -311,6 +311,26 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.checkpoint, "hf://simrig/go1-policy/policy.params")
         self.assertEqual(args.hf_revision, "abc123")
 
+    def test_eval_suite_parses_huggingface_policy_ref(self) -> None:
+        parser = build_parser()
+
+        args = parser.parse_args(
+            [
+                "eval-suite",
+                "hf://ssuleiman/simrig-vision-cartpole/policy.params",
+                "--contract",
+                "task.frozen.json",
+                "--hf-revision",
+                "v1",
+            ]
+        )
+
+        self.assertEqual(
+            args.checkpoint,
+            "hf://ssuleiman/simrig-vision-cartpole/policy.params",
+        )
+        self.assertEqual(args.hf_revision, "v1")
+
     def test_eval_passes_seed_and_command(self) -> None:
         with (
             patch("simrig.cli.resolve_policy_checkpoint", return_value=Path("policy.params")),

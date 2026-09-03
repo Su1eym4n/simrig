@@ -56,18 +56,9 @@ Replace `<run-dir>` with the directory printed by `simrig train`. The smoke
 preset verifies the PPO path; it is not evidence that a useful policy has
 converged.
 
-To exercise real checkpoint loading (both final parameters and Orbax), shared
-preview/eval execution, and independent physical measurements:
-
-```bash
-SIMRIG_TEST_POLICY=runs/<run-dir>/policy.params \
-  python -m pytest tests/test_learned_reach.py -q
-```
-
-CI runs this against its tiny policy to validate integration, not convergence.
-The [learned reaching reference](examples/learned_reach/README.md) separately
-checks physical acceptance and baseline discrimination. A successful training
-command or a green integration test does not imply those checks pass.
+A successful training command or a green integration test does not imply
+physical acceptance or baseline discrimination. Use `simrig eval` /
+`simrig eval-suite` with task-owned contracts for that evidence.
 
 ## Pull requests
 

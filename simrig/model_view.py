@@ -22,6 +22,7 @@ from simrig.browser_shell import (
     camera_interaction_script,
     frame_poll_script,
     threejs_agent_camera_script,
+    viewer_chrome_script,
     viewer_styles,
 )
 from simrig.mujoco_backend import _import_mujoco, resolve_model_path
@@ -685,8 +686,10 @@ def _threejs_html() -> str:
     <button class="secondary" id="reset-joints">Reset Joints</button>
     <button class="secondary" id="reset-camera">Reset Camera</button>
     <div id="controls"></div>
-    <h1 style="margin-top:18px">Status</h1>
-    <pre id="status">loading</pre>
+    <details class="simrig-debug">
+      <summary>Raw State</summary>
+      <pre id="status">loading</pre>
+    </details>
   </aside>
   <script type="module">
     import * as THREE from 'three';
@@ -975,6 +978,9 @@ def _threejs_html() -> str:
       console.error(err);
     }
   </script>
+"""
+        + viewer_chrome_script()
+        + """
 </body>
 </html>
 """
@@ -1002,8 +1008,10 @@ def _frame_html() -> str:
     <div id="meta" class="meta">loading joints...</div>
     <button class="secondary" onclick="resetJoints()">Reset Joints</button>
     <div id="controls"></div>
-    <h1 style="margin-top:18px">Status</h1>
-    <pre id="status">loading</pre>
+    <details class="simrig-debug">
+      <summary>Raw State</summary>
+      <pre id="status">loading</pre>
+    </details>
   </aside>
   <script>
     const frame = document.getElementById('frame');
@@ -1069,6 +1077,7 @@ def _frame_html() -> str:
     loadJoints();
     refreshControlsTimer = setInterval(loadJoints, 2000);
   </script>
+  {viewer_chrome_script()}
 </body>
 </html>
 """

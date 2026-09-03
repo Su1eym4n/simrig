@@ -62,27 +62,31 @@ cannot be substituted without a loader that reconstructs that policy and its
 observations/action mapping. Other environments likewise need their own
 evaluator; changing `environment.ref` does not add support.
 
-## Watch the same rollout
+## Watch the interactive showcase
 
 ```bash
 python examples/mujoco_reach/evaluator.py --preview
 python examples/mujoco_reach/evaluator.py --controller examples/mujoco_reach/controllers/zero.py --preview
 ```
 
-Open the printed localhost URL. The script waits up to 15 seconds for a browser,
-runs the same MuJoCo rollout, holds the final state for five seconds, then exits.
-The positive controller reaches quickly. The preview uses `LiveWebViewer`; it
-shows live simulation, not recorded trajectory playback. Its Three.js assets
-load from a CDN. Omit `--preview` for headless measurements without a browser.
+Open the printed localhost URL. The script selects an available local port,
+waits up to 15 seconds for a browser, and runs a preview-only arm with base yaw,
+shoulder, and elbow joints. Its shoulder
+is mounted directly on the base cylinder. The route contains 30 seeded random
+positions at different radii, heights, and angles around every side of the
+robot, but only the current red target is shown. Preview mode rate-limits the
+controller's joint-position commands and briefly holds each arrival so the
+motion is easy to inspect. **Reset Simulation** restores the centered initial
+arm state, clears the trail, and restarts at target 1 at any time. Stop the
+persistent preview with `Ctrl+C`.
+
+The positive controller is **scripted inverse kinematics, not a trained
+policy**. The preview uses `LiveWebViewer`; it shows live simulation, not
+recorded trajectory playback. Its Three.js assets load from a CDN. Omit
+`--preview` for the original two-joint, single-target headless acceptance
+measurement; that evaluator and model are unchanged.
 
 ## Limits and adapting it
-
-This checks arrival, **not sustained holding, collision safety, robustness, or
-hardware readiness**. A fleeting target crossing can pass. Some reset states
-may already be close to a target; only post-step measurements are scored.
-The reset range matches the MJX reaching task, but RNG samples and this fixed
-target suite differ from its training distribution. There is no reward in this
-evaluator, so this is not a reward-hacking experiment.
 
 To adapt it, define the new task's measurements and scenarios, implement the
 simulator/policy loading in [`evaluator.py`](evaluator.py), test appropriate

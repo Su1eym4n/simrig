@@ -10,8 +10,8 @@
 
 </div>
 
-Turn MuJoCo robots into trained policies with agent-guided task design, PPO
-training, evaluation, and interactive previews.
+Build, train, evaluate, and visually inspect MuJoCo control experiments with
+agent-guided task design, PPO training, and interactive browser previews.
 
 SimRig combines:
 
@@ -24,6 +24,34 @@ Raw robot XML is not automatically a training task. SimRig helps the agent move
 from a model and a requested behavior to explicit observations, actions,
 rewards, resets, termination conditions, validation, training, and evaluation.
 
+## See what the policy is actually doing
+
+Inspect raw MJCF models with joint controls, preview trained policies in an
+interactive Three.js scene, or attach the same viewer to an existing MuJoCo
+controller. Orbit, zoom, pause, reset episodes, inspect authored robot cameras,
+and follow live paths—without building a separate visualization stack.
+
+```bash
+# Inspect a raw model in the browser.
+simrig view-model path/to/robot.xml --port 8766
+
+# Preview a trained policy in the browser.
+simrig preview runs/<run-dir>/policy.params \
+  --env Go1JoystickFlatTerrain \
+  --port 8765
+```
+
+Open the printed local URL. The default viewer keeps camera controls independent
+from simulation and policy stepping; named MuJoCo cameras are available in a
+separate **Robot View** inset.
+
+## Examples
+
+| [Vision cartpole](examples/README.md#vision_cartpole) | [Scripted IK reaching](examples/mujoco_reach/README.md#watch-the-interactive-showcase) |
+|:---:|:---:|
+| [<img src="assets/vision-cartpole-preview.gif" alt="Vision cartpole policy balancing in SimRig Preview" width="420">](examples/README.md#vision_cartpole) | [<img src="examples/mujoco_reach/assets/scripted-ik-preview.gif" alt="Scripted inverse-kinematics controller reaching targets in SimRig Live" width="420">](examples/mujoco_reach/README.md#watch-the-interactive-showcase) |
+| Pretrained pixel PPO · CUDA + Warp | Scripted controller · no training required |
+
 ## From prompt to simulation
 
 ### Exchange a ball between two Franka Panda arms
@@ -35,8 +63,28 @@ continuous simulation cycle.
 <details>
 <summary><strong>Prompt</strong></summary>
 
-> Run a complete dual-Panda A→B→A ball exchange in MuJoCo and record it for the
-> README. Make the throw, catch, and return phases smooth and easy to follow.
+> Create a MuJoCo scene with two Franka Panda arms facing each other across a
+> clear workspace and a lightweight ball between them.
+>
+> First inspect the robot models and scene, then propose a physical task
+> contract for a ball exchange: initial poses, allowed contacts, release and
+> catch criteria, reset conditions, failures, episode horizon, and measurable
+> success metrics. Ask me to confirm any choices that materially affect what
+> counts as success.
+>
+> After confirmation, create an editable custom environment and validate it.
+> Start with a smoke run before any larger training run.
+>
+> Use staged learning if end-to-end throw-and-catch is not initially feasible:
+> establish a reliable reach/grasp/release baseline, then receiving/catching,
+> then the full exchange. Keep rewards, observations, reset logic, and
+> termination rules explicit in Python.
+>
+> Evaluate across multiple fixed seeds and show independent success metrics
+> rather than reward alone. Serve an interactive browser preview with a clear
+> side camera and a robot-camera view so the throw, catch, and return phases
+> are easy to inspect. Record a short demo only after the behavior is
+> reproducible.
 
 </details>
 
@@ -214,19 +262,11 @@ training. Its inputs are clearly labeled scripted controllers. Evaluator plugins
 own environment setup and policy loading: the protocol is reusable, but an
 arbitrary environment or SDK is not supported merely by passing its name.
 
-For learned checkpoints, the [complete reaching reference](examples/learned_reach/README.md)
-uses SimRig's reusable Playground evaluator adapter. The agent supplies scenario
-reset and physical measurement hooks; SimRig loads the policy, runs each seeded
-case, validates states/actions, and applies the independent gates. The same
-policy runtime powers `eval`, `preview`, and native `demo`, including final
-`policy.params` and numeric Orbax checkpoints. Evaluation reports use unique
-filenames; `simrig eval --output PATH` selects an explicit destination.
+The same policy runtime powers `eval`, `preview`, and native `demo`, including
+final `policy.params` and numeric Orbax checkpoints. Evaluation reports use
+unique filenames; `simrig eval --output PATH` selects an explicit destination.
 The runtime currently requires `action_repeat=1`; unsupported control rates
-fail explicitly. This is an end-to-end integration reference, not proof of a
-challenging task: the recorded learned policy and random actions both pass all
-24 development/holdout cases under the existing arrival-only definition. The
-reference verifier reports the failed baseline-discrimination expectation; see
-the [measured results](examples/learned_reach/results.md).
+fail explicitly.
 
 Missing measurements are insufficient evidence, not successful absence checks.
 Suite reports record per-trial identities and refuse mixed/duplicate coverage.
@@ -326,6 +366,10 @@ Open the printed `http://127.0.0.1:8767/` URL. The page receives lightweight
 geom transforms while the Python script retains full control of simulation
 timing and state. A named `tracking_body` also draws its live path. Use
 `wait_for_client()` when motion should begin only after the page is ready.
+The sidebar can be collapsed for an unobstructed viewport. When a project needs
+its own surrounding interface, append `?embed=1` to show only the live scene and
+embed that URL in the project page; task-specific panels and controls remain
+ordinary project code.
 
 After defining the task, scaffold and validate an editable environment:
 

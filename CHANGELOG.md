@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Remove the learned reaching acceptance example and the orbit-arm PPO demo
+  from the tree (archived on branch `archive/orbit-reach-learned` for later
+  rework). Keep the scripted MuJoCo IK evaluation example.
+
 ## 0.5.0 - 2026-08-31
 
 ### Compatibility and scope

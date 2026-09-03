@@ -43,6 +43,19 @@ class PreviewMetadataTests(unittest.TestCase):
     def test_non_command_environment_has_no_controls(self) -> None:
         self.assertEqual(_command_controls(object(), _State({})), [])
 
+    def test_warmup_helper_is_defined(self) -> None:
+        from simrig.preview import PolicyPreviewSession
+
+        self.assertTrue(callable(getattr(PolicyPreviewSession, "_warmup_policy_unlocked")))
+
+    def test_threejs_preview_keeps_jax_on_the_server_thread(self) -> None:
+        source = Path(__file__).resolve().parents[1].joinpath("simrig/preview.py").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("session._run_rollout()", source)
+        self.assertIn('name="simrig-preview-http"', source)
+        self.assertNotIn('name="simrig-preview-rollout"', source)
+
     def test_three_axis_command_gets_locomotion_defaults(self) -> None:
         controls = _command_controls(
             object(),
@@ -117,6 +130,8 @@ class PreviewMetadataTests(unittest.TestCase):
             self.assertIn('id="command-controls"', page)
             self.assertIn('id="episode-state"', page)
             self.assertIn('id="auto-reset"', page)
+            self.assertIn("simrig-sidebar-toggle", page)
+            self.assertIn('<details class="simrig-debug">', page)
             self.assertNotIn('<label>Forward X</label>', page)
 
 

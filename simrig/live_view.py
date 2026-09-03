@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from simrig.browser_shell import viewer_styles
+from simrig.browser_shell import viewer_chrome_script, viewer_styles
 from simrig.three_scene import geom_transforms, scene_payload
 
 
@@ -33,6 +33,8 @@ class LiveWebViewer:
         port: int = 8767,
         fps: int = 30,
         tracking_body: str | int | None = None,
+        tracking_site: str | int | None = None,
+        allow_reset: bool = False,
         mujoco_module: Any | None = None,
     ) -> None:
         if fps < 1:
@@ -53,15 +55,18 @@ class LiveWebViewer:
         self.host = host
         self.port = port
         self.fps = int(fps)
+        self.allow_reset = bool(allow_reset)
         self.lock = threading.RLock()
-        self._tracking_body_id, self._tracking_body_name = self._resolve_tracking_body(
-            tracking_body
-        )
+        if tracking_body is not None and tracking_site is not None:
+            raise ValueError("Choose tracking_body or tracking_site, not both")
+        self._tracking_body_id, self._tracking_body_name = self._resolve_tracking_body(tracking_body)
+        self._tracking_site_id, self._tracking_site_name = self._resolve_tracking_site(tracking_site)
         self._scene: dict[str, Any] | None = None
         self._status: dict[str, Any] = {}
         self._frame = 0
         self._state = "starting"
         self._client_event = threading.Event()
+        self._reset_event = threading.Event()
         self._server: ThreadingHTTPServer | None = None
         self._server_thread: threading.Thread | None = None
 
@@ -101,6 +106,17 @@ class LiveWebViewer:
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
+            def do_POST(self) -> None:  # noqa: N802
+                parsed = urlparse(self.path)
+                if parsed.path != "/reset":
+                    self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+                    return
+                if not viewer.allow_reset:
+                    self.send_error(HTTPStatus.CONFLICT, "Simulation reset is unavailable")
+                    return
+                viewer.request_reset()
+                self._send_json({"reset_requested": True})
+
             def log_message(self, format: str, *args: Any) -> None:
                 return
 
@@ -128,8 +144,13 @@ class LiveWebViewer:
                 if content_encoding is not None:
                     self.send_header("Content-Encoding", content_encoding)
                 self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # Browsers may cancel a polling request during navigation or
+                    # refresh. The simulator and other viewer clients continue.
+                    return
 
         self._server = ThreadingHTTPServer((self.host, self.port), Handler)
         self._server.daemon_threads = True
@@ -185,6 +206,20 @@ class LiveWebViewer:
 
         return self._client_event.wait(timeout)
 
+    def request_reset(self) -> None:
+        """Signal that the script-owned simulation should reset."""
+
+        if self.allow_reset:
+            self._reset_event.set()
+
+    def consume_reset_request(self) -> bool:
+        """Return and clear the browser's pending reset request."""
+
+        if not self._reset_event.is_set():
+            return False
+        self._reset_event.clear()
+        return True
+
     def scene_payload(self) -> dict[str, Any]:
         """Return static geometry and the current initial transforms."""
 
@@ -202,7 +237,9 @@ class LiveWebViewer:
                 "transforms": geom_transforms(self.model, self.data),
                 "tracking_position": self._tracking_position(),
                 "tracking_body": self._tracking_body_name,
+                "tracking_site": self._tracking_site_name,
                 "fps_target": self.fps,
+                "reset_available": self.allow_reset,
             }
 
     def state_payload(self) -> dict[str, Any]:
@@ -217,7 +254,9 @@ class LiveWebViewer:
                 "viewer_connected": self._client_event.is_set(),
                 "fps_target": self.fps,
                 "tracking_body": self._tracking_body_name,
+                "tracking_site": self._tracking_site_name,
                 "tracking_position": self._tracking_position(),
+                "reset_available": self.allow_reset,
                 "transforms": geom_transforms(self.model, self.data),
                 **self._status,
             }
@@ -246,7 +285,29 @@ class LiveWebViewer:
             raise ValueError(f"Model has no body named {body!r}")
         return int(body_id), body
 
+    def _resolve_tracking_site(self, site: str | int | None) -> tuple[int | None, str | None]:
+        if site is None:
+            return None, None
+        if isinstance(site, int):
+            site_id = site
+            if site_id < 0 or site_id >= self.model.nsite:
+                raise ValueError(f"Invalid tracking site id: {site_id}")
+            name = self.mujoco.mj_id2name(
+                self.model, self.mujoco.mjtObj.mjOBJ_SITE, site_id
+            )
+            return site_id, name or f"site_{site_id}"
+        site_id = self.mujoco.mj_name2id(
+            self.model, self.mujoco.mjtObj.mjOBJ_SITE, site
+        )
+        if site_id < 0:
+            raise ValueError(f"Model has no site named {site!r}")
+        return int(site_id), site
+
     def _tracking_position(self) -> list[float] | None:
+        if self._tracking_site_id is not None:
+            return np.asarray(
+                self.data.site_xpos[self._tracking_site_id], dtype=float
+            ).tolist()
         if self._tracking_body_id is None:
             return None
         return np.asarray(
@@ -291,11 +352,14 @@ def _live_html() -> str:
   <aside>
     <h1>SimRig Live</h1>
     <div id="render-meta">Three.js · connecting to script…</div>
+    <button id="reset-simulation" hidden>Reset Simulation</button>
     <button class="secondary" id="reset-camera">Reset Camera</button>
     <button class="secondary" id="clear-trail">Clear Trail</button>
     <button class="secondary" id="hide-trail">Show Trail</button>
-    <h1 style="margin-top:18px">Script State</h1>
-    <pre id="status">loading</pre>
+    <details class="simrig-debug">
+      <summary>Script State</summary>
+      <pre id="status">loading</pre>
+    </details>
   </aside>
   <script type="module">
     import * as THREE from 'three';
@@ -485,6 +549,7 @@ def _live_html() -> str:
       const res = await fetch('/scene.json', {cache: 'no-store'});
       if (!res.ok) throw new Error(`scene request failed (${res.status})`);
       const payload = await res.json();
+      document.getElementById('reset-simulation').hidden = !payload.reset_available;
       targetPollMs = Math.max(16, Math.round(1000 / (payload.fps_target || 30)));
       for (const mesh of payload.meshes) {
         const geometry = new THREE.BufferGeometry();
@@ -541,6 +606,21 @@ def _live_html() -> str:
       }
     }
 
+    async function resetSimulation() {
+      const button = document.getElementById('reset-simulation');
+      button.disabled = true;
+      try {
+        const res = await fetch('/reset', {method: 'POST', cache: 'no-store'});
+        if (!res.ok) throw new Error(`reset request failed (${res.status})`);
+        clearTrail();
+      } catch (err) {
+        statusEl.textContent = String(err);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById('reset-simulation').addEventListener('click', resetSimulation);
     document.getElementById('reset-camera').addEventListener('click', fitCamera);
     document.getElementById('clear-trail').addEventListener('click', clearTrail);
     document.getElementById('hide-trail').addEventListener('click', () => {
@@ -559,6 +639,9 @@ def _live_html() -> str:
       console.error(err);
     }
   </script>
+"""
+        + viewer_chrome_script()
+        + """
 </body>
 </html>
 """
